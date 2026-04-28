@@ -1,180 +1,43 @@
-import React, { useRef, useState, useEffect } from 'react'
+import React, { useMemo, useRef, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import TurnerOrb3D from './TurnerOrb3D'
 import { useAudioAnalyzer } from '../hooks/useAudioAnalyzer'
+import { useTurnerVoiceSocket } from '../hooks/useTurnerVoiceSocket'
 import { useDetectionStore } from '../store/detectionStore'
 import './TurnerVoiceMode.css'
 
 type OrbState = 'idle' | 'presenting' | 'thinking' | 'speaking'
 
-// STT Type Definitions
-declare global {
-  interface Window {
-    webkitSpeechRecognition: any;
-    SpeechRecognition: any;
-  }
-}
-
 export const TurnerVoiceMode: React.FC = () => {
-  const [orbState, setOrbState] = useState<OrbState>('idle')
-  const [transcript, setTranscript] = useState('')
   const [question, setQuestion] = useState('')
-  const [error, setError] = useState('')
+  const [panelText, setPanelText] = useState('')
+  const [uiError, setUiError] = useState('')
   const [showCC, setShowCC] = useState(true)
-  const [isListening, setIsListening] = useState(false)
-  
+
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const recognitionRef = useRef<any>(null)
-  const recorderRef = useRef<MediaRecorder | null>(null)
-  const audioChunksRef = useRef<Blob[]>([])
-  const [micStream, setMicStream] = useState<MediaStream | null>(null)
-
-  // Audio Analysis
-  const metrics = useAudioAnalyzer(audioRef.current, micStream)
-  
-  // Global Detection State (for HUD)
+  const metrics = useAudioAnalyzer(audioRef.current, null)
   const { isPaused, setPaused } = useDetectionStore()
+  const {
+    connectionState,
+    voiceState,
+    stateDetail,
+    transcript,
+    response,
+    greeting,
+    error: socketError,
+    engineRunning,
+    sendAction,
+  } = useTurnerVoiceSocket()
 
-  // Initialize Speech Recognition
-  const initRecognition = () => {
-    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-    if (SpeechRecognition) {
-      if (recognitionRef.current) {
-        recognitionRef.current.onstart = null
-        recognitionRef.current.onend = null
-        recognitionRef.current.onresult = null
-        recognitionRef.current.onerror = null
-      }
+  const isListening = voiceState === 'listening'
+  const orbState = useMemo<OrbState>(() => {
+    if (voiceState === 'responding') return 'speaking'
+    if (voiceState === 'thinking' || voiceState === 'transcribing') return 'thinking'
+    return 'idle'
+  }, [voiceState])
 
-      const recognition = new SpeechRecognition()
-      recognition.continuous = false
-      recognition.interimResults = false
-      recognition.lang = 'en-US'
-
-      recognition.onstart = () => {
-        setIsListening(true)
-        setError('')
-      }
-      recognition.onend = () => setIsListening(false)
-      recognition.onresult = (event: any) => {
-        const text = event.results[0][0].transcript
-        setQuestion(text)
-        void handleAsk(text)
-      }
-      recognition.onerror = (event: any) => {
-        console.error('STT Error:', event.error)
-        if (event.error === 'network') {
-          setError('Network Error: Browser STT service unreachable. Switching to Robust Backend Mode...')
-          setTimeout(() => {
-            setError('')
-            void startRobustRecording()
-          }, 2000)
-        } else if (event.error === 'not-allowed') {
-          setError('Microphone access denied. Please enable it in browser settings.')
-        } else if (event.error === 'no-speech') {
-          // Auto-retry once for no-speech to keep the session alive
-          console.log('No speech detected, retrying...')
-          setTimeout(() => {
-            if (!isListening) recognition.start()
-          }, 500)
-        } else {
-          setError(`Speech error: ${event.error}`)
-        }
-        setIsListening(false)
-      }
-      recognitionRef.current = recognition
-    } else {
-      console.warn('Web Speech API not supported in this browser.')
-      setError('Browser STT not supported. Use the Mic to record directly to backend.')
-    }
-  }
-
-  const startRobustRecording = async () => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      setMicStream(stream)
-      const recorder = new MediaRecorder(stream)
-      recorderRef.current = recorder
-      audioChunksRef.current = []
-
-      recorder.onstart = () => {
-        setIsListening(true)
-        setError('')
-      }
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) audioChunksRef.current.push(e.data)
-      }
-
-      recorder.onstop = async () => {
-        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/webm' })
-        setIsListening(false)
-        setMicStream(null)
-        setOrbState('thinking')
-        
-        try {
-          const formData = new FormData()
-          formData.append('audio', audioBlob, 'voice.webm')
-          
-          const resp = await fetch('http://localhost:8000/api/ai/transcribe', {
-            method: 'POST',
-            body: formData,
-          })
-          
-          if (!resp.ok) throw new Error('Transcription failed')
-          const data = await resp.json()
-          if (data.text) {
-            setQuestion(data.text)
-            void handleAsk(data.text)
-          } else {
-            setOrbState('idle')
-          }
-        } catch (err) {
-          console.error('Robust STT Error:', err)
-          setError('Backend transcription failed. Please check server status.')
-          setOrbState('idle')
-        }
-        
-        // Cleanup stream
-        stream.getTracks().forEach(track => track.stop())
-      }
-
-      recorder.start()
-    } catch (err) {
-      console.error('Failed to start recorder:', err)
-      setError('Could not access microphone for robust mode.')
-    }
-  }
-
-  useEffect(() => {
-    initRecognition()
-  }, [])
-
-  const toggleListening = () => {
-    if (isListening) {
-      if (recorderRef.current && recorderRef.current.state === 'recording') {
-        recorderRef.current.stop()
-      } else {
-        recognitionRef.current?.stop()
-      }
-    } else {
-      setError('')
-      // If we already know there's a network issue or browser doesn't support it, use robust mode directly
-      const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition
-      if (!SpeechRecognition || error.includes('Network Error')) {
-        void startRobustRecording()
-        return
-      }
-
-      try {
-        recognitionRef.current?.start()
-      } catch (e) {
-        console.error('STT Start Error:', e)
-        initRecognition()
-        setTimeout(() => recognitionRef.current?.start(), 100)
-      }
-    }
-  }
+  const displayText = panelText || response || transcript || greeting
+  const displayError = uiError || socketError
 
   const playAudioB64 = (b64: string): Promise<void> => new Promise((resolve) => {
     try {
@@ -189,99 +52,95 @@ export const TurnerVoiceMode: React.FC = () => {
       }
       const audio = new Audio(url)
       audioRef.current = audio
-      setOrbState('speaking')
-      audio.onended = () => { setOrbState('idle'); URL.revokeObjectURL(url); resolve() }
-      audio.onerror = () => { setOrbState('idle'); resolve() }
+      audio.onended = () => {
+        URL.revokeObjectURL(url)
+        resolve()
+      }
+      audio.onerror = () => resolve()
       void audio.play()
-    } catch { setOrbState('idle'); resolve() }
+    } catch {
+      resolve()
+    }
   })
 
   const handlePresent = async () => {
-    if (orbState !== 'idle') return
-    setOrbState('presenting')
-    setTranscript('')
-    setError('')
+    setPanelText('')
+    setUiError('')
     try {
       const resp = await fetch('http://localhost:8000/api/ai/introduce')
       if (!resp.ok) throw new Error(`Server returned ${resp.status}`)
       const data = await resp.json() as { script?: string; audio_b64?: string }
-      if (data.script) setTranscript(data.script)
+      if (data.script) setPanelText(data.script)
       if (data.audio_b64) {
-        setOrbState('idle')
         await playAudioB64(data.audio_b64)
       } else {
-        setOrbState('idle')
-        setError('No audio returned — check ElevenLabs API key')
+        setUiError('No audio returned — check ElevenLabs API key')
       }
     } catch (e) {
-      setOrbState('idle')
-      setError(`Introduction failed: ${String(e)}`)
+      setUiError(`Introduction failed: ${String(e)}`)
     }
   }
 
-  const handleAsk = async (textOverride?: string) => {
-    const q = textOverride || question.trim()
-    if (!q || orbState !== 'idle') return
-    if (!textOverride) setQuestion('')
-    
-    setOrbState('thinking')
-    setTranscript('')
-    setError('')
+  const handleAsk = async () => {
+    const q = question.trim()
+    if (!q) return
+
+    setUiError('')
     try {
-      const resp = await fetch('http://localhost:8000/api/ai/speak', {
+      const resp = await fetch('http://localhost:8000/turner/voice', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: q }),
+        body: JSON.stringify({ text: q }),
       })
       if (!resp.ok) throw new Error(`Server returned ${resp.status}`)
-      const data = await resp.json() as { response?: string; audio_b64?: string }
-      if (data.response) setTranscript(data.response)
-      if (data.audio_b64) {
-        setOrbState('idle')
-        await playAudioB64(data.audio_b64)
-      } else {
-        setOrbState('idle')
-      }
+      const data = await resp.json() as { response?: string }
+      setPanelText(data.response ?? '')
+      setQuestion('')
     } catch (e) {
-      setOrbState('idle')
-      setError(`Voice response failed: ${String(e)}`)
+      setUiError(`Voice response failed: ${String(e)}`)
     }
   }
 
-  const statusLabel: Record<OrbState, string> = {
-    idle: isListening ? 'Listening...' : 'Ready',
-    presenting: 'Preparing introduction...',
-    thinking: 'Processing...',
-    speaking: 'Speaking',
+  const statusLabel: Record<string, string> = {
+    starting: 'Starting backend voice engine...',
+    wake_detected: 'Wake word detected',
+    greeting: 'Greeting user',
+    listening: 'Listening for request',
+    transcribing: 'Transcribing request',
+    thinking: 'Processing request',
+    responding: 'Responding',
+    idle: engineRunning ? 'Wake-word monitor active' : 'Voice engine offline',
+    stopped: 'Voice engine stopped',
+    error: 'Voice pipeline error',
   }
 
   return (
     <div className="turner-voice-mode">
-      {/* ── Neural Orb (3D Integrated) ── */}
       <div className="turner-voice-avatar-wrap">
-        <TurnerOrb3D 
+        <TurnerOrb3D
           size={500}
           amplitude={metrics.amplitude}
-          state={orbState === 'idle' && isListening ? 'listening' : orbState}
+          state={isListening ? 'listening' : orbState}
         />
         <div className={`turner-voice-status-ring turner-voice-status-ring--${orbState} ${isListening ? 'listening' : ''}`} />
         <div className="avatar-scan-line" />
       </div>
 
-      {/* ── Visual Backdrop ── */}
-      <div className={`voice-backdrop-pulse ${orbState}`} />
+      <div className={`voice-backdrop-pulse ${isListening ? 'listening' : orbState}`} />
 
-      {/* ── Visual Feedback ── */}
       <div className="turner-voice-status-readout">
         <div className={`turner-voice-status turner-voice-status--${orbState} ${isListening ? 'listening' : ''}`}>
           <span className="turner-voice-status__dot" />
-          {statusLabel[orbState]}
+          {statusLabel[voiceState] ?? voiceState}
+        </div>
+        <div className="turner-voice-status-meta">
+          <span>{connectionState.toUpperCase()}</span>
+          <span>{stateDetail || (engineRunning ? 'Backend supervision active' : 'Waiting for backend')}</span>
         </div>
       </div>
 
-      {/* ── Transcript (CC) ── */}
       <AnimatePresence mode="wait">
-        {showCC && transcript && (
+        {showCC && displayText && (
           <motion.div
             key="transcript"
             className="turner-voice-transcript"
@@ -291,10 +150,10 @@ export const TurnerVoiceMode: React.FC = () => {
             transition={{ type: 'spring', damping: 20 }}
           >
             <div className="transcript-hud-line" />
-            <p>{transcript}</p>
+            <p>{displayText}</p>
           </motion.div>
         )}
-        {error && (
+        {displayError && (
           <motion.div
             key="error"
             className="turner-voice-error-card"
@@ -308,25 +167,23 @@ export const TurnerVoiceMode: React.FC = () => {
               </svg>
               <span>System Diagnostic</span>
             </div>
-            <p>{error}</p>
-            <button className="error-reset-btn" onClick={() => error.includes('Network Error') ? startRobustRecording() : initRecognition()}>
-              {error.includes('Network Error') ? 'Switch to Robust Mode' : 'Reset Connection'}
+            <p>{displayError}</p>
+            <button className="error-reset-btn" onClick={() => sendAction('status')}>
+              Refresh Status
             </button>
           </motion.div>
         )}
       </AnimatePresence>
 
-      {/* ── Tactical Controls ── */}
       <div className="turner-voice-controls">
         <motion.button
-          className={`turner-voice-btn turner-voice-btn--mic ${isListening ? 'active' : ''}`}
-          onClick={toggleListening}
-          disabled={orbState !== 'idle' && !isListening}
+          className={`turner-voice-btn turner-voice-btn--mic ${engineRunning ? 'active' : ''}`}
+          onClick={() => sendAction('status')}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
-          title={isListening ? 'Stop Listening' : 'Start Talking'}
+          title="Refresh backend voice status"
         >
-          {isListening ? (
+          {engineRunning ? (
             <div className="mic-listening-waves">
               <span /><span /><span />
             </div>
@@ -354,7 +211,6 @@ export const TurnerVoiceMode: React.FC = () => {
         <motion.button
           className="turner-voice-btn turner-voice-btn--present"
           onClick={() => void handlePresent()}
-          disabled={orbState !== 'idle' || isListening}
           whileHover={{ scale: 1.05 }}
           whileTap={{ scale: 0.95 }}
         >
@@ -379,18 +235,25 @@ export const TurnerVoiceMode: React.FC = () => {
           )}
           <span className="btn-label">{isPaused ? 'RESUME' : 'PAUSE'}</span>
         </motion.button>
+
+        <motion.button
+          className="turner-voice-btn turner-voice-btn--present"
+          onClick={() => sendAction('cancel')}
+          whileHover={{ scale: 1.05 }}
+          whileTap={{ scale: 0.95 }}
+        >
+          Stop
+        </motion.button>
       </div>
 
-      {/* ── Manual Q&A Fallback ── */}
       <div className="turner-voice-manual">
         <input
           type="text"
           className="turner-voice-manual__input"
-          placeholder={isListening ? "Listening..." : "Type if voice fails..."}
+          placeholder={isListening ? 'Backend listening for wake + speech...' : 'Type if voice fails...'}
           value={question}
           onChange={(e) => setQuestion(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') void handleAsk() }}
-          disabled={orbState !== 'idle' || isListening}
         />
       </div>
     </div>

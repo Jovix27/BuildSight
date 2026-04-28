@@ -8,6 +8,7 @@ import { VLMActivityFeed } from './VLMActivityFeed'
 import { DynamicZoneEditor } from './DynamicZoneEditor'
 import type { DynamicZone } from '../types/geoai'
 import TurnerOrb3D from './TurnerOrb3D'
+import { SymphonyPanel } from './SymphonyPanel'
 import './BuildSightBrain.css'
 
 interface BuildSightBrainProps {
@@ -57,7 +58,7 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
   const { stats } = useDetectionStats()
   const [controlsOpen, setControlsOpen]     = useState(false)
   const [activeControlGroup, setActiveControlGroup] = useState<string | null>(null)
-  const [activeTab, setActiveTab]           = useState<'geoai' | 'turner' | 'cameras'>('geoai')
+  const [activeTab, setActiveTab]           = useState<'geoai' | 'turner' | 'cameras' | 'orchestration'>('geoai')
   const [timeStr, setTimeStr]               = useState('')
   const [turnerInput, setTurnerInput]       = useState('')
   const [turnerChat, setTurnerChat]         = useState([
@@ -433,9 +434,10 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
         <aside className="god-column god-column-right">
 
           <div className="god-tabs">
-            <button className={`god-btn ${activeTab === 'geoai'   ? 'god-btn-primary' : ''}`} onClick={() => setActiveTab('geoai')}>GEO AI</button>
-            <button className={`god-btn ${activeTab === 'turner'  ? 'god-btn-primary' : ''}`} onClick={() => setActiveTab('turner')}>TURNER AI</button>
-            <button className={`god-btn ${activeTab === 'cameras' ? 'god-btn-primary' : ''}`} onClick={() => setActiveTab('cameras')}>CAMERAS</button>
+            <button className={`god-tab ${activeTab === 'geoai'   ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('geoai')}>GEO AI</button>
+            <button className={`god-tab ${activeTab === 'turner'  ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('turner')}>TURNER AI</button>
+            <button className={`god-tab ${activeTab === 'cameras' ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('cameras')}>CAMERAS</button>
+            <button className={`god-tab ${activeTab === 'orchestration' ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('orchestration')}>SYMPHONY</button>
           </div>
 
           <motion.div className="god-panel god-flex-grow" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
@@ -589,6 +591,12 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
                     </div>
                   ))}
                 </div>
+              </div>
+            )}
+
+            {activeTab === 'orchestration' && (
+              <div className="god-tab-content" style={{ padding: 0 }}>
+                <SymphonyPanel />
               </div>
             )}
 

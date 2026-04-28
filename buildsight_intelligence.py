@@ -921,22 +921,19 @@ class IntelligenceEngine:
     def _resolve_zone(self, wx: float, wy: float) -> str:
         """Resolve which zone a world position falls in.
 
-        Thresholds are in site-local metres with rotation_deg=0 (north-up).
-        Derived from GPS zone template polygons in geoai/router.py:
-          high_risk_staircase  : lon 78.66883-78.66888, lat 10.81665-10.81667
-          low_risk_parking     : lon 78.66898-78.66901, lat 10.81658-10.81667
-          moderate_risk_interior: lon 78.66884-78.66898, lat 10.81659-10.81666
+        Thresholds for 18.9 × 9.75 m site with rotation_deg=85.
+        Derived from buildsight_zones_complete.geojson polygon extents.
         """
-        # high_risk_staircase — NW quadrant of site
-        if 3.0 <= wx <= 8.0 and wy >= 10.5:
+        # high_risk_staircase — NW local corner (wx≈0-3.5, wy≈5.5-9.75)
+        if 0.0 <= wx <= 3.5 and wy >= 5.5:
             return "high_risk_staircase"
-        # low_risk_parking — NE strip
-        elif wx >= 19.0 and 2.5 <= wy <= 13.0:
+        # low_risk_parking — eastern strip (wx≈14.5-18.9)
+        elif wx >= 14.5:
             return "low_risk_parking"
-        # moderate_risk_interior — broad central zone
-        elif 3.5 <= wx <= 19.0 and 3.5 <= wy <= 12.0:
+        # moderate_risk_interior — large central zone
+        elif 0.0 <= wx < 14.5 and 0.0 <= wy <= 7.5:
             return "moderate_risk_interior"
-        # high_risk_scaffolding — remaining interior (edges / upper area)
+        # high_risk_scaffolding — perimeter / remaining interior
         elif 0.5 <= wx <= SITE_CONFIG["width_m"] - 0.5 and 0.5 <= wy <= SITE_CONFIG["depth_m"] - 0.5:
             return "high_risk_scaffolding"
         else:

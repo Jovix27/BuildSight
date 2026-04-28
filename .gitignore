@@ -159,6 +159,7 @@ attachment.txt
 # =========================
 # AI Agent Folders (only .claude, .agent, .agents are used)
 # =========================
+.worktrees/
 .adal/
 .augment/
 .bob/

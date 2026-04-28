@@ -26,6 +26,8 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
+import os
+from dotenv import load_dotenv
 
 import websockets
 from websockets.asyncio.server import serve, ServerConnection
@@ -60,6 +62,23 @@ BROADCAST_INTERVAL_S = 0.2  # 5 FPS telemetry updates
 SW_LAT = SITE_CONFIG["sw_lat"]
 SW_LON = SITE_CONFIG["sw_lon"]
 
+# H matrix calibrated at 848×478 — must match SITE_CONFIG calib_frame_w/h
+_H_PATH = PROJECT_ROOT / "spatial" / "calibration" / "camera_cam01_H.npy"
+_CALIB_W = SITE_CONFIG.get("calib_frame_w", 848)
+_CALIB_H = SITE_CONFIG.get("calib_frame_h", 478)
+
+# Load environment variables
+load_dotenv(PROJECT_ROOT / "dashboard" / "backend" / ".env")
+
+_DB_CONFIG = None
+if os.getenv("POSTGRES_DB"):
+    _DB_CONFIG = {
+        "host": os.getenv("POSTGRES_HOST", "localhost"),
+        "port": os.getenv("POSTGRES_PORT", "5432"),
+        "dbname": os.getenv("POSTGRES_DB", "buildsight_geoai"),
+        "user": os.getenv("POSTGRES_USER", "postgres"),
+        "password": os.getenv("POSTGRES_PASSWORD", "password")
+    }
 
 # ── GeoAI State ────────────────────────────────────────────────────────────────
 
@@ -73,7 +92,12 @@ class GeoAIBroadcaster:
     _PIPELINE_TIMEOUT_S = 30.0
 
     def __init__(self):
-        self.engine = IntelligenceEngine()
+        self.engine = IntelligenceEngine(
+            homography_path=str(_H_PATH) if _H_PATH.exists() else None,
+            db_config=_DB_CONFIG,
+            frame_width=_CALIB_W,
+            frame_height=_CALIB_H,
+        )
         self.heatmap_engine = HeatmapEngine()
         self.clients: Set[ServerConnection] = set()
         self.cycle = 0

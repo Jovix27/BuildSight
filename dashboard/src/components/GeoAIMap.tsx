@@ -371,7 +371,7 @@ export function GeoAIMap({
 
       if (mapMode === 'segment') {
         if (isAnalyzing) return
-        const swLat = 10.81658333, swLon = 78.66873333
+        const swLat = 10.81658333, swLon = 78.66883333
         const mLat = 111132.92
         const mLon = 111412.84 * Math.cos((swLat * Math.PI) / 180)
         const ry = (realWorldGps[0] - swLat) * mLat
@@ -596,7 +596,7 @@ export function GeoAIMap({
       const cosA = Math.cos(angleRad)
       const sinA = Math.sin(angleRad)
       const siteSwLat = 10.81658333
-      const siteSwLon = 78.66873333
+      const siteSwLon = 78.66883333
       const mLat = 110574.0
       const mLon = 111319.0 * Math.cos((siteSwLat * Math.PI) / 180)
       for (let r = 0; r < rows; r++) {

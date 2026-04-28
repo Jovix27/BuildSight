@@ -44,6 +44,9 @@ tqdm
 edge-tts
 pyttsx3
 pyaudio
+pvporcupine>=3.0.2
+openai-whisper>=20231117
+sounddevice>=0.4.7
 
 # AI APIs
 google-genai

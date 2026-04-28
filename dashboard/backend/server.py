@@ -26,6 +26,7 @@ import tempfile
 import time
 import uuid
 # deque removed — scene smoothing now handled by SceneConditionTracker (hysteresis)
+import contextlib
 from pathlib import Path
 
 import cv2
@@ -51,6 +52,13 @@ import database
 from datetime import datetime
 from geoai import geoai_router
 from geoai.utils.spatial_mapper import SpatialMapper as BaseSpatialMapper
+from voice_engine import (
+    PorcupineWakeWordDetector,
+    SoundDeviceAudioInput,
+    TurnerVoiceEngine,
+    VoiceEvent,
+    WhisperSpeechTranscriber,
+)
 
 try:
     import google.generativeai as genai
@@ -258,6 +266,94 @@ class WSConnectionManager:
 
 
 ws_manager = WSConnectionManager()
+
+
+class TurnerVoiceConnectionManager:
+    def __init__(self) -> None:
+        self._connections: Set[WebSocket] = set()
+
+    async def connect(self, ws: WebSocket) -> None:
+        await ws.accept()
+        self._connections.add(ws)
+
+    def disconnect(self, ws: WebSocket) -> None:
+        self._connections.discard(ws)
+
+    async def broadcast(self, data: dict) -> None:
+        dead: Set[WebSocket] = set()
+        for ws in list(self._connections):
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.add(ws)
+        self._connections -= dead
+
+
+class TurnerVoiceEventPublisher:
+    def __init__(self, callback):
+        self._callback = callback
+
+    async def publish(self, event: VoiceEvent) -> None:
+        payload = {
+            "type": event.type,
+            "session_id": event.session_id,
+            "timestamp": event.timestamp,
+            **event.payload,
+        }
+        await self._callback(payload)
+
+
+class NullAudioInput:
+    async def start(self) -> None:
+        return None
+
+    async def stop(self) -> None:
+        return None
+
+
+class NullWakeWordDetector:
+    def process(self, pcm: bytes) -> bool:
+        del pcm
+        return False
+
+
+turner_voice_ws_manager = TurnerVoiceConnectionManager()
+
+
+def build_turner_voice_engine(*, event_callback, chat_handler) -> TurnerVoiceEngine:
+    access_key = os.environ.get("TURNER_WAKE_ACCESS_KEY") or os.environ.get("PORCUPINE_ACCESS_KEY", "")
+    keyword_path = os.environ.get("TURNER_WAKE_KEYWORD_PATH", "").strip() or None
+    whisper_model = os.environ.get("TURNER_WHISPER_MODEL", "tiny.en")
+
+    try:
+        if access_key:
+            audio_input = SoundDeviceAudioInput()
+            wake_detector = PorcupineWakeWordDetector(
+                access_key=access_key,
+                keyword_path=keyword_path,
+            )
+            transcriber = WhisperSpeechTranscriber(model_name=whisper_model)
+        else:
+            raise RuntimeError("TURNER_WAKE_ACCESS_KEY not configured")
+    except Exception as exc:
+        logger.warning("Turner voice backend falling back to null audio adapters: %s", exc)
+        audio_input = NullAudioInput()
+        wake_detector = NullWakeWordDetector()
+        transcriber = NullSpeechTranscriber()
+
+    return TurnerVoiceEngine(
+        audio_input=audio_input,
+        wake_detector=wake_detector,
+        transcriber=transcriber,
+        publisher=TurnerVoiceEventPublisher(event_callback),
+        chat_handler=chat_handler,
+    )
+
+
+class NullSpeechTranscriber:
+    async def transcribe(self, audio_bytes: bytes) -> str:
+        del audio_bytes
+        return ""
 
 # bg_service is initialised in the startup event (after all inference
 # functions are defined) to avoid forward-reference issues.
@@ -531,6 +627,12 @@ class ChatRequest(BaseModel):
     context: dict = {}
 
 
+class TurnerVoiceTextRequest(BaseModel):
+    text: str = ""
+    history: list[ChatMessage] = []
+    context: dict = {}
+
+
 def _build_mistral_messages(req: "ChatRequest", full_prompt: str) -> list[dict]:
     """Convert ChatRequest history + enriched prompt into Mistral message list."""
     messages = [{"role": "system", "content": TURNER_SYSTEM_PROMPT}]
@@ -599,6 +701,165 @@ def _build_site_prompt(req: "ChatRequest") -> str:
         f"{vlm_section}\n"
         f"USER REQUEST\n{req.message}"
     ).strip()
+
+
+async def _refresh_turner_visual_context() -> None:
+    """Warm the VLM cache before Turner prompt assembly."""
+    try:
+        from geoai_vlm_util import describe_frame_async, is_available as vlm_ready
+        if vlm_ready() and latest_frame_jpeg:
+            await describe_frame_async(jpeg_bytes=latest_frame_jpeg, force_refresh=False)
+    except Exception:
+        pass
+
+
+async def _transcribe_uploaded_audio(audio_bytes: bytes, mime_type: str) -> str:
+    """Transcribe uploaded audio bytes via the configured multimodal model."""
+    if not ai_model:
+        raise HTTPException(status_code=503, detail="Gemini (ai_model) not configured for transcription.")
+
+    response = await run_in_threadpool(
+        ai_model.generate_content,
+        [
+            "Transcribe this audio exactly as heard. Do not add punctuation or formatting that is not present. If no speech is detected, return exactly an empty string.",
+            {"mime_type": mime_type, "data": audio_bytes},
+        ],
+    )
+    return _extract_response_text(response).strip()
+
+
+async def run_turner_chat(
+    message: str,
+    *,
+    history: list[ChatMessage] | None = None,
+    context: dict | None = None,
+) -> dict:
+    request_id = uuid.uuid4().hex[:10]
+    req = ChatRequest(message=message, history=history or [], context=context or {})
+
+    if not mistral_enabled and not ai_model:
+        log_turner_event(
+            "turner_request_rejected",
+            request_id=request_id,
+            reason="MISSING_API_KEY",
+        )
+        return {
+            "response": (
+                "Turner AI is currently offline. "
+                "Set MISTRAL_API_KEY (or GOOGLE_API_KEY) in the backend environment."
+            ),
+            "error": "MISSING_API_KEY",
+            "request_id": request_id,
+            "status_code": 503,
+        }
+
+    await _refresh_turner_visual_context()
+
+    full_prompt = _build_site_prompt(req)
+    ctx = req.context
+    log_turner_event(
+        "turner_request_received",
+        request_id=request_id,
+        provider="mistral" if mistral_enabled else "gemini",
+        message=req.message,
+        history_length=len(req.history),
+        context={
+            "workers": ctx.get("workers", 0),
+            "helmets": ctx.get("helmets", 0),
+            "vests": ctx.get("vests", 0),
+            "condition": ctx.get("condition", "Unknown"),
+            "alerts": ctx.get("alerts", []),
+        },
+    )
+
+    if mistral_enabled:
+        try:
+            messages = _build_mistral_messages(req, full_prompt)
+            response_text = await run_in_threadpool(_call_mistral_sync, messages)
+            log_turner_event(
+                "turner_response_success",
+                request_id=request_id,
+                provider="mistral",
+                response=response_text,
+            )
+            return {
+                "response": response_text,
+                "status": "success",
+                "provider": "mistral",
+                "request_id": request_id,
+            }
+        except Exception as e:
+            logger.warning("Mistral call failed (%s): %s — trying Gemini fallback.", type(e).__name__, e)
+            if not ai_model:
+                log_turner_event(
+                    "turner_response_error",
+                    request_id=request_id,
+                    error=str(e),
+                    error_type=type(e).__name__,
+                )
+                return {
+                    "response": "Turner encountered a Mistral error and no Gemini fallback is configured. Please retry.",
+                    "error": type(e).__name__,
+                    "request_id": request_id,
+                    "status_code": 500,
+                }
+
+    try:
+        gemini_history = [
+            {"role": "user" if m.role == "user" else "model", "parts": [m.content]}
+            for m in req.history
+        ]
+        chat = ai_model.start_chat(history=gemini_history)
+        response = await run_in_threadpool(chat.send_message, full_prompt)
+        response_text = _extract_response_text(response)
+        block_metadata = _response_block_metadata(response)
+
+        if not response_text:
+            blocked = bool(block_metadata.get("prompt_block_reason")) or any(
+                reason and "SAFETY" in reason.upper()
+                for reason in block_metadata.get("candidate_finish_reasons", [])
+            )
+            if blocked:
+                return {
+                    "response": _turner_blocked_message(block_metadata),
+                    "status": "blocked",
+                    "error": "SAFETY_BLOCKED",
+                    "request_id": request_id,
+                    "details": block_metadata,
+                }
+            return {
+                "response": "I did not receive a usable model response. Please retry.",
+                "status": "empty",
+                "error": "EMPTY_RESPONSE",
+                "request_id": request_id,
+                "status_code": 502,
+            }
+
+        log_turner_event(
+            "turner_response_success",
+            request_id=request_id,
+            provider="gemini",
+            response=response_text,
+        )
+        return {
+            "response": response_text,
+            "status": "success",
+            "provider": "gemini",
+            "request_id": request_id,
+        }
+    except Exception as e:
+        log_turner_event(
+            "turner_response_error",
+            request_id=request_id,
+            error=str(e),
+            error_type=type(e).__name__,
+        )
+        return {
+            "response": "I encountered a synchronization error. Please try again.",
+            "error": type(e).__name__,
+            "request_id": request_id,
+            "status_code": 500,
+        }
 
 
 # ── model loading ──────────────────────────────────────────────────────────────
@@ -691,6 +952,25 @@ async def startup_health_check():
         logger.info("    [OK] GeoAI Router integrated")
     
     logger.info("═"*50)
+
+
+@app.on_event("startup")
+async def startup_turner_voice_engine() -> None:
+    engine = getattr(app.state, "turner_voice_engine", None)
+    if engine is None:
+        engine = build_turner_voice_engine(
+            event_callback=turner_voice_ws_manager.broadcast,
+            chat_handler=run_turner_chat,
+        )
+        app.state.turner_voice_engine = engine
+    await engine.start()
+
+
+@app.on_event("shutdown")
+async def shutdown_turner_voice_engine() -> None:
+    engine = getattr(app.state, "turner_voice_engine", None)
+    if engine is not None:
+        await engine.stop()
 
 
 @app.on_event("startup")
@@ -2712,112 +2992,134 @@ async def detect_video(
 
 @app.post("/api/ai/chat")
 async def ai_chat(req: ChatRequest):
-    request_id = uuid.uuid4().hex[:10]
+    result = await run_turner_chat(
+        req.message,
+        history=req.history,
+        context=req.context,
+    )
+    status_code = result.pop("status_code", None)
+    if isinstance(status_code, int):
+        return JSONResponse(result, status_code=status_code)
+    return result
 
-    if not mistral_enabled and not ai_model:
-        log_turner_event(
-            "turner_request_rejected",
-            request_id=request_id,
-            reason="MISSING_API_KEY",
+
+@app.post("/turner/voice")
+async def turner_voice(request: Request):
+    content_type = request.headers.get("content-type", "")
+
+    if "application/json" in content_type:
+        payload = TurnerVoiceTextRequest(**(await request.json()))
+        if not payload.text.strip():
+            raise HTTPException(status_code=400, detail="Provide text or audio input.")
+
+        result = await run_turner_chat(
+            payload.text.strip(),
+            history=payload.history,
+            context=payload.context,
         )
-        return JSONResponse({
-            "response": (
-                "Turner AI is currently offline. "
-                "Set MISTRAL_API_KEY (or GOOGLE_API_KEY) in the backend environment."
-            ),
-            "error": "MISSING_API_KEY",
-            "request_id": request_id,
-        }, status_code=503)
+        status_code = result.pop("status_code", None)
+        if isinstance(status_code, int):
+            return JSONResponse(result, status_code=status_code)
+        return result
 
-    # Refresh Florence-2 visual grounding before building the prompt.
-    # Uses cached result if <10s old (no extra latency). If stale or missing,
-    # runs a fresh caption on the latest CCTV frame (~1.5s on GPU).
-    # Falls through silently if VLM is not loaded or no frame is available.
+    form = await request.form()
+    text = str(form.get("text") or "").strip()
+    upload = form.get("audio")
+
+    if text:
+        result = await run_turner_chat(text)
+        status_code = result.pop("status_code", None)
+        if isinstance(status_code, int):
+            return JSONResponse(result, status_code=status_code)
+        return result
+
+    if upload is None or not isinstance(upload, UploadFile):
+        raise HTTPException(status_code=400, detail="Provide text or audio input.")
+
+    audio_bytes = await upload.read()
+    engine = getattr(app.state, "turner_voice_engine", None)
+    if engine is not None:
+        transcript = await engine.transcribe_bytes(audio_bytes, upload.content_type or "audio/webm")
+    else:
+        transcript = await _transcribe_uploaded_audio(audio_bytes, upload.content_type or "audio/webm")
+    if not transcript and ai_model:
+        transcript = await _transcribe_uploaded_audio(audio_bytes, upload.content_type or "audio/webm")
+    if not transcript:
+        raise HTTPException(status_code=422, detail="Transcription failed.")
+
+    result = await run_turner_chat(transcript)
+    result["transcript"] = transcript
+    status_code = result.pop("status_code", None)
+    if isinstance(status_code, int):
+        return JSONResponse(result, status_code=status_code)
+    return result
+
+
+@app.websocket("/ws/turner-voice")
+async def turner_voice_ws(websocket: WebSocket):
+    await turner_voice_ws_manager.connect(websocket)
+    engine = getattr(app.state, "turner_voice_engine", None)
+
+    if engine is None:
+        await websocket.send_json({
+            "type": "health",
+            "state": "restricted",
+            "session_id": "config_missing",
+            "engine_running": False,
+            "error": "Porcupine keys missing. Voice restricted."
+        })
+        try:
+            while True:
+                await asyncio.sleep(15)
+                await websocket.send_json({"type": "ping"})
+        except:
+            pass
+        return
+
+    await websocket.send_json({
+        "type": "health",
+        "state": engine.state,
+        "session_id": engine.session_id,
+        "engine_running": True,
+    })
+
+    async def heartbeat():
+        while True:
+            await asyncio.sleep(10)
+            try:
+                await websocket.send_json({"type": "ping"})
+            except Exception:
+                break
+
+    heartbeat_task = asyncio.create_task(heartbeat())
     try:
-        from geoai_vlm_util import describe_frame_async, is_available as vlm_ready
-        if vlm_ready() and latest_frame_jpeg:
-            await describe_frame_async(jpeg_bytes=latest_frame_jpeg, force_refresh=False)
+        while True:
+            try:
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=30)
+                action = message.get("action")
+                if action == "cancel":
+                    await engine.cancel_current_cycle(reason="manual_cancel")
+                elif action == "status":
+                    await websocket.send_json({
+                        "type": "health",
+                        "state": engine.state,
+                        "session_id": engine.session_id,
+                        "engine_running": True,
+                    })
+            except asyncio.TimeoutError:
+                await websocket.send_json({"type": "ping"})
+            except Exception:
+                break
+    except WebSocketDisconnect:
+        pass
     except Exception:
         pass
-
-    full_prompt = _build_site_prompt(req)
-    ctx = req.context
-    log_turner_event(
-        "turner_request_received",
-        request_id=request_id,
-        provider="mistral" if mistral_enabled else "gemini",
-        message=req.message,
-        history_length=len(req.history),
-        context={
-            "workers": ctx.get("workers", 0),
-            "helmets": ctx.get("helmets", 0),
-            "vests":   ctx.get("vests", 0),
-            "condition": ctx.get("condition", "Unknown"),
-            "alerts": ctx.get("alerts", []),
-        },
-    )
-
-    # ── Mistral path ─────────────────────────────────────────────────────────
-    if mistral_enabled:
-        try:
-            messages = _build_mistral_messages(req, full_prompt)
-            response_text = await run_in_threadpool(_call_mistral_sync, messages)
-            log_turner_event("turner_response_success", request_id=request_id,
-                             provider="mistral", response=response_text)
-            return {"response": response_text, "status": "success",
-                    "provider": "mistral", "request_id": request_id}
-        except Exception as e:
-            logger.warning("Mistral call failed (%s): %s — trying Gemini fallback.", type(e).__name__, e)
-            if not ai_model:
-                log_turner_event("turner_response_error", request_id=request_id,
-                                 error=str(e), error_type=type(e).__name__)
-                return JSONResponse({
-                    "response": "Turner encountered a Mistral error and no Gemini fallback is configured. Please retry.",
-                    "error": type(e).__name__,
-                    "request_id": request_id,
-                }, status_code=500)
-
-    # ── Gemini fallback path ─────────────────────────────────────────────────
-    try:
-        gemini_history = [
-            {"role": "user" if m.role == "user" else "model", "parts": [m.content]}
-            for m in req.history
-        ]
-        chat = ai_model.start_chat(history=gemini_history)
-        response = await run_in_threadpool(chat.send_message, full_prompt)
-        response_text = _extract_response_text(response)
-        block_metadata = _response_block_metadata(response)
-
-        if not response_text:
-            blocked = bool(block_metadata.get("prompt_block_reason")) or any(
-                reason and "SAFETY" in reason.upper()
-                for reason in block_metadata.get("candidate_finish_reasons", [])
-            )
-            if blocked:
-                return JSONResponse({
-                    "response": _turner_blocked_message(block_metadata),
-                    "status": "blocked", "error": "SAFETY_BLOCKED",
-                    "request_id": request_id, "details": block_metadata,
-                }, status_code=200)
-            return JSONResponse({
-                "response": "I did not receive a usable model response. Please retry.",
-                "status": "empty", "error": "EMPTY_RESPONSE",
-                "request_id": request_id,
-            }, status_code=502)
-
-        log_turner_event("turner_response_success", request_id=request_id,
-                         provider="gemini", response=response_text)
-        return {"response": response_text, "status": "success",
-                "provider": "gemini", "request_id": request_id}
-
-    except Exception as e:
-        log_turner_event("turner_response_error", request_id=request_id,
-                         error=str(e), error_type=type(e).__name__)
-        return JSONResponse({
-            "response": "I encountered a synchronization error. Please try again.",
-            "error": type(e).__name__,
-            "request_id": request_id,
-        }, status_code=500)
+    finally:
+        heartbeat_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await heartbeat_task
+        turner_voice_ws_manager.disconnect(websocket)
+        await websocket.close()
 
 
 # ── Turner AI Streaming Route ─────────────────────────────────────────────────
@@ -3399,6 +3701,15 @@ async def turner_transcribe(audio: UploadFile = File(...)):
         logger.error("Turner transcription error: %s", e)
         return JSONResponse(status_code=500, content={"error": str(e), "text": ""})
 
+@app.get("/")
+async def root():
+    """Root endpoint for health checks"""
+    return {"status": "ok", "service": "BuildSight API"}
+
+@app.get("/favicon.ico")
+async def favicon():
+    """Prevent favicon 404 errors"""
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     import uvicorn

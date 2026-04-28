@@ -20,32 +20,32 @@ SITE_CONFIG = {
         "NE_HALL":      [10.816715, 78.668946],
         "NW_TOILET":    [10.816527, 78.668945],
     },
-    # SW corner derived from site_boundary zone template — matches GeoJSON polygons
-    "sw_lat": 10.81655620,
-    "sw_lon": 78.66880589,
-    # Actual site extent measured from zone boundary GPS coordinates:
-    #   lon span (78.66903362 - 78.66880589) * 109 450 m/° ≈ 24.93 m (E-W)
-    #   lat span (10.81669864 - 10.81655620) * 110 574 m/° ≈ 15.75 m (N-S)
-    "width_m": 24.93,   # X-axis = East
-    "depth_m": 15.75,   # Y-axis = North
-    # rotation_deg=0 means image X maps to East and image Y maps to North.
-    # The overhead camera view is roughly north-aligned; previous -113° value
-    # was producing coordinates ≈10 m south of the site boundary.
-    "rotation_deg": 0,
+    # SW corner from buildsight_zones_complete.geojson metadata (authoritative)
+    "sw_lat": 10.81658333,
+    "sw_lon": 78.66883333,
+    # Site extent from H-matrix calibration (camera_cam01_H.npy world points):
+    #   SW(0,0) → NE(18.9, 9.75) in site-local metres
+    "width_m": 18.9,    # X-axis = site local East (rotated 85° from true East)
+    "depth_m": 9.75,    # Y-axis = site local North
+    # rotation_deg=85: all GeoJSON zone polygons are pre-rotated 85° CCW from
+    # axis-aligned. world_to_gps must rotate by +85° before adding to SW corner
+    # so that worker GPS coords fall inside the zone polygons.
+    "rotation_deg": 85,
     "centre": [10.81662742, 78.66891976],
+    # H-matrix calibration frame (camera_cam01_H.npy was calibrated at 848×478)
+    "calib_frame_w": 848,
+    "calib_frame_h": 478,
     "utm_zone": 44,
     "utm_band": "N",
-    # ── CAM-01 perspective model (from camera_CAM01_position in zones.geojson) ──
+    # ── CAM-01 perspective model (fallback when H matrix is unavailable) ──
     # Camera mounted in neighbour building south of site, looking North at 7.62m
-    "cam_wx":      12.46,   # m east of SW corner (78.66891976 is midpoint lon)
-    "cam_wy":      -5.00,   # m south of SW corner (camera is outside site)
-    "cam_h":        7.62,   # camera height above ground (m)
-    "cam_fov_h":   60.0,    # horizontal FoV in degrees (from GeoJSON)
-    # Ground coverage from camera_fov_CAM01 polygon:
-    #   near (bottom of frame): lat 10.81658333 → wy ≈ 3.0m
-    #   far  (top  of frame):   lat 10.81668959 → wy ≈ 14.75m
-    "cam_wy_near":  3.0,    # wy at bottom frame edge (m)
-    "cam_wy_far":  14.75,   # wy at top frame edge (m)
+    "cam_wx":      9.45,    # m east of SW corner (≈ site width midpoint 18.9/2)
+    "cam_wy":     -5.00,    # m south of SW corner (camera is outside site)
+    "cam_h":       7.62,    # camera height above ground (m)
+    "cam_fov_h":  60.0,     # horizontal FoV in degrees
+    # Vertical coverage: bottom of frame ≈ 2m into site, top ≈ 9m (within 9.75m)
+    "cam_wy_near": 2.0,     # wy at bottom frame edge (m)
+    "cam_wy_far":  9.0,     # wy at top frame edge (m)
 }
 
 class SpatialMapper:
@@ -100,7 +100,14 @@ class SpatialMapper:
     def pixel_to_world(self, px: float, py: float) -> Tuple[float, float]:
         """Convert pixel (x, y) to site-local meters (world_x, world_y)."""
         if self.calibrated and self.H is not None:
-            pt = np.array([[[px, py]]], dtype=np.float32)
+            # H matrix was calibrated at (calib_frame_w × calib_frame_h).
+            # Scale incoming pixels from the live frame size to calibration size
+            # so the homography is applied in the correct pixel space.
+            calib_w = self.site.get("calib_frame_w", 848)
+            calib_h = self.site.get("calib_frame_h", 478)
+            sx = px * (calib_w / self.frame_w)
+            sy = py * (calib_h / self.frame_h)
+            pt = np.array([[[sx, sy]]], dtype=np.float32)
             world = cv2.perspectiveTransform(pt, self.H)
             wx, wy = float(world[0][0][0]), float(world[0][0][1])
         else:

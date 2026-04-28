@@ -46,12 +46,18 @@ SERVICES = {
         "cmd": [sys.executable, str(BACKEND_DIR / "heatmap_engine.py")],
         "health_url": None,
     },
+    "symphony": {
+        "name": "Symphony Orchestrator",
+        "port": 3001,
+        "cmd": [sys.executable, str(BACKEND_DIR / "symphony_service.py")],
+        "health_url": "http://localhost:3001/api/symphony/tasks",
+    },
     "pipeline": {
         "name": "GeoAI Detection Pipeline",
         "port": None,  # Processing service, no port
         "cmd": [
             sys.executable, 
-            str(PROJECT_ROOT / "research" / "experiments" / "geoai_pipeline.py"),
+            str(PROJECT_ROOT / "geoai_pipeline.py"),
             "--source", r"E:\Company\Green Build AI\Prototypes\BuildSight\research\buildsight-base\gis\inputs\rd4.mp4",
             "--db",
             "--ws",
@@ -130,8 +136,8 @@ def main():
     elif args.ws:
         to_launch = ["ws"]
     else:
-        # User specified order: 1. FastAPI, 2. WS, 3. Heatmap, 4. Pipeline
-        to_launch = ["api", "ws", "heatmap", "pipeline"]
+        # User specified order: 1. FastAPI, 2. WS, 3. Symphony, 4. Heatmap, 5. Pipeline
+        to_launch = ["api", "ws", "symphony", "heatmap", "pipeline"]
     
     procs = {}
     

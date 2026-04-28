@@ -181,6 +181,15 @@
   backdrop-filter: blur(10px);
 }
 
+.turner-voice-status-meta {
+  display: flex;
+  gap: 0.75rem;
+  font-size: 0.7rem;
+  color: rgba(255,255,255,0.55);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .turner-voice-status__dot {
   width: 8px;
   height: 8px;

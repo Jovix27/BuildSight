@@ -1,73 +1,65 @@
-# React + TypeScript + Vite
+# BuildSight Dashboard
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This dashboard hosts the Turner AI and GeoAI frontend for BuildSight.
 
-Currently, two official plugins are available:
+## Turner Voice Setup
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+Turner voice now runs in the backend on the same Windows machine as the microphone. The browser no longer owns speech recognition.
 
-## React Compiler
+Required environment variables:
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- `MISTRAL_API_KEY` or `GOOGLE_API_KEY`
+- `ELEVENLABS_API_KEY` for spoken output
+- `TURNER_WAKE_ACCESS_KEY` for Porcupine access
+- `TURNER_WAKE_KEYWORD_PATH` for the custom `Hi Turner` wake-word model if used
 
-## Expanding the ESLint configuration
+Install backend dependencies:
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
-
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+pip install -r requirements.txt
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+Run the backend:
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
-
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```powershell
+python dashboard/backend/server.py
 ```
+
+Install frontend dependencies:
+
+```powershell
+npm.cmd --prefix dashboard install
+```
+
+Run the frontend:
+
+```powershell
+npm.cmd --prefix dashboard run dev
+```
+
+## Manual Validation
+
+1. Start the backend on the same machine as the microphone.
+2. Open the Turner voice tab in the dashboard.
+3. Say `Hi Turner`.
+4. Confirm the UI shows a greeting event and Turner says `Hi sir, how can I assist you?`
+5. Ask `Give me a PPE compliance summary for zone B`.
+6. Confirm the backend emits `transcript`, `response`, and `state_update` events in sequence.
+7. Trigger `Stop` from the UI while Turner is speaking or processing.
+8. Confirm the engine returns to `idle`.
+
+## Verification Commands
+
+Backend tests:
+
+```powershell
+python -m pytest dashboard/backend/tests/test_voice_engine.py dashboard/backend/tests/test_turner_voice_routes.py -v
+```
+
+Frontend typecheck:
+
+```powershell
+.\dashboard\node_modules\.bin\tsc.cmd -b .\dashboard\tsconfig.json
+```
+
+Note: full `vite build` may still fail in restricted Windows environments if the host blocks child-process spawning inside Vite config resolution.

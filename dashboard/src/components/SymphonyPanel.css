@@ -1,0 +1,311 @@
+/* premium orchestration panel styles */
+.symphony-panel-container {
+  display: flex;
+  flex-direction: row;
+  height: 100%;
+  background: transparent !important;
+  border: none !important;
+  overflow: hidden;
+  gap: 1px;
+  background: rgba(226, 232, 240, 0.05) !important;
+}
+
+/* Sidebar Styling */
+.symphony-sidebar {
+  width: 320px;
+  display: flex;
+  flex-direction: column;
+  background: rgba(5, 5, 8, 0.4);
+  backdrop-filter: blur(12px);
+  border-right: 1px solid rgba(226, 232, 240, 0.08);
+}
+
+.symphony-status-indicator {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.symphony-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  box-shadow: 0 0 10px currentColor;
+}
+
+.symphony-dot--online {
+  background: #00ff80;
+  color: #00ff80;
+  animation: pulse 2s infinite;
+}
+
+.symphony-dot--offline {
+  background: #ff4d4d;
+  color: #ff4d4d;
+}
+
+@keyframes pulse {
+  0% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.5; transform: scale(1.2); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+.symphony-task-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.symphony-task-card {
+  padding: 14px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(226, 232, 240, 0.05);
+  border-radius: 8px;
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.symphony-task-card:hover {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(226, 232, 240, 0.15);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+.symphony-task-card--active {
+  background: linear-gradient(135deg, rgba(226, 232, 240, 0.08) 0%, rgba(226, 232, 240, 0.02) 100%);
+  border-color: rgba(226, 232, 240, 0.3);
+  box-shadow: inset 0 0 15px rgba(226, 232, 240, 0.05);
+}
+
+.symphony-task-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.symphony-status-badge {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.status--pending { background: rgba(255, 170, 0, 0.1); color: #ffaa00; border: 1px solid rgba(255, 170, 0, 0.2); }
+.status--running { background: rgba(0, 255, 128, 0.1); color: #00ff80; border: 1px solid rgba(0, 255, 128, 0.2); }
+.status--completed { background: rgba(0, 153, 255, 0.1); color: #0099ff; border: 1px solid rgba(0, 153, 255, 0.2); }
+.status--failed { background: rgba(255, 77, 77, 0.1); color: #ff4d4d; border: 1px solid rgba(255, 77, 77, 0.2); }
+
+.symphony-priority-label {
+  font-size: 9px;
+  color: var(--color-silver-dark);
+  font-weight: 600;
+}
+
+.symphony-task-title {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-premium-silver);
+  margin-bottom: 10px;
+  line-height: 1.4;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.symphony-task-footer {
+  display: flex;
+  gap: 12px;
+  color: var(--color-silver-dark);
+  font-size: 10px;
+}
+
+.symphony-task-meta-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Main Content Styling */
+.symphony-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  background: rgba(5, 5, 8, 0.2);
+  overflow: hidden;
+}
+
+.symphony-detail-header {
+  padding: 24px;
+  background: linear-gradient(to bottom, rgba(226, 232, 240, 0.03), transparent);
+  border-bottom: 1px solid rgba(226, 232, 240, 0.05);
+}
+
+.symphony-detail-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 20px;
+}
+
+.symphony-detail-title {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--color-premium-silver);
+  margin-bottom: 4px;
+}
+
+.symphony-detail-branch {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  color: var(--color-silver-dark);
+  opacity: 0.7;
+}
+
+.symphony-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+}
+
+.symphony-stat-card {
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(226, 232, 240, 0.05);
+  padding: 10px;
+  border-radius: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.symphony-stat-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-silver-dark);
+}
+
+.symphony-stat-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-premium-silver);
+}
+
+/* Event Log */
+.symphony-event-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  background: rgba(0, 0, 0, 0.2);
+}
+
+.symphony-event-item {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  line-height: 1.6;
+  padding: 4px 8px;
+  border-radius: 4px;
+  transition: background 0.2s;
+}
+
+.symphony-event-item:hover {
+  background: rgba(226, 232, 240, 0.03);
+}
+
+.symphony-event-time {
+  color: var(--color-silver-dark);
+  opacity: 0.5;
+  white-space: nowrap;
+}
+
+.symphony-event-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.symphony-event-type {
+  font-weight: 700;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+.symphony-event-message {
+  color: var(--color-premium-silver);
+  opacity: 0.9;
+}
+
+.symphony-event-payload {
+  margin-top: 6px;
+  padding: 12px;
+  background: rgba(0, 0, 0, 0.4);
+  border: 1px solid rgba(226, 232, 240, 0.1);
+  border-radius: 6px;
+  font-size: 11px;
+  color: #a0aec0;
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.symphony-event-payload pre {
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+/* Status variants for events */
+.status--dispatched { color: #94a3b8; }
+.status--verified { color: #00ff80; }
+.status--failed { color: #ff4d4d; }
+
+/* Scrollbar */
+.symphony-task-list::-webkit-scrollbar,
+.symphony-event-log::-webkit-scrollbar {
+  width: 4px;
+}
+
+.symphony-task-list::-webkit-scrollbar-thumb,
+.symphony-event-log::-webkit-scrollbar-thumb {
+  background: rgba(226, 232, 240, 0.1);
+  border-radius: 2px;
+}
+
+/* Empty State */
+.symphony-empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--color-silver-dark);
+  gap: 16px;
+}
+
+.symphony-empty-icon {
+  width: 48px;
+  height: 48px;
+  opacity: 0.1;
+  stroke-width: 1;
+}
+
+.symphony-approve-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px !important;
+  font-size: 11px !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.1em !important;
+}
+
+.priority--high { color: #ff4d4d; }
+.priority--medium { color: #ffaa00; }
+.priority--low { color: #0099ff; }
