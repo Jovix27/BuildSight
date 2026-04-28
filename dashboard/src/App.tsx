@@ -30,6 +30,7 @@ import { SettingsPanel } from './components/SettingsPanel'
 import { SettingsProvider, useSettings } from './SettingsContext'
 import { DetectionStatsProvider, useDetectionStats } from './DetectionStatsContext'
 import { TurnerPage } from './components/TurnerPage'
+import { TurnerSidebar } from './components/TurnerSidebar'
 import { AnalyticsPage } from './components/AnalyticsPage'
 import { GeoAIPage } from './components/GeoAIPage'
 import { BuildSightBrain } from './components/BuildSightBrain'
@@ -140,6 +141,7 @@ function AppInner() {
   const { stats, liveAlerts } = useDetectionStats()
   const connectDetection = useDetectionStore(s => s.connect)
   const [view, setView] = useState<View>('dashboard')
+  const [sidebarOpen, setSidebarOpen] = useState(false)
 
   // Connect background detection WebSocket once at app startup.
   // This single connection persists across ALL tab navigation.
@@ -615,17 +617,45 @@ function AppInner() {
       {view !== 'brain' && view !== 'turner' && (
         <button
           type="button"
-          className="turner-fab"
-          onClick={() => setView('turner')}
-          aria-label="Open Turner AI Supervisor"
-          title="Open Turner AI"
+          className={`turner-fab ${sidebarOpen ? 'turner-fab--open' : ''}`}
+          onClick={() => setSidebarOpen((o) => !o)}
+          aria-label={sidebarOpen ? 'Close Turner AI' : 'Open Turner AI'}
+          title={sidebarOpen ? 'Close Turner AI' : 'Open Turner AI'}
         >
           <span className="turner-fab__ring" aria-hidden="true" />
-          <svg viewBox="0 0 24 24" width="22" height="22" fill="currentColor" aria-hidden="true">
-            <path d="M12 2a2 2 0 0 1 2 2v1h1a3 3 0 0 1 3 3v1a3 3 0 0 1-3 3h-1v1a2 2 0 0 1-4 0v-1H9a3 3 0 0 1-3-3V8a3 3 0 0 1 3-3h1V4a2 2 0 0 1 2-2Zm-1 7H9a1 1 0 0 0-1 1v1a1 1 0 0 0 1 1h2v-3Zm2 0v3h2a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1h-2Zm-1 6a4 4 0 0 0 4-4h-8a4 4 0 0 0 4 4Zm-4 2h8l1 3H6l1-3Z" />
-          </svg>
-          <span className="turner-fab__label">Turner AI</span>
+          {sidebarOpen ? (
+            <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
+              <path d="M18 6L6 18M6 6l12 12" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 40 40" fill="none" width="22" height="22" aria-hidden="true">
+              <polygon points="20,2 36,11 36,29 20,38 4,29 4,11" stroke="currentColor" strokeWidth="1.5" fill="none" opacity="0.7" />
+              <circle cx="20" cy="20" r="5" fill="currentColor" opacity="0.25" />
+              <circle cx="20" cy="20" r="2.5" fill="currentColor" />
+              <line x1="20" y1="15" x2="20" y2="2"  stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <line x1="20" y1="25" x2="20" y2="38" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <line x1="13" y1="17" x2="4"  y2="11" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <line x1="27" y1="17" x2="36" y2="11" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <line x1="13" y1="23" x2="4"  y2="29" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <line x1="27" y1="23" x2="36" y2="29" stroke="currentColor" strokeWidth="1" opacity="0.6" />
+              <circle cx="20" cy="2"  r="1.8" fill="currentColor" opacity="0.8" />
+              <circle cx="20" cy="38" r="1.8" fill="currentColor" opacity="0.8" />
+              <circle cx="4"  cy="11" r="1.8" fill="currentColor" opacity="0.8" />
+              <circle cx="36" cy="11" r="1.8" fill="currentColor" opacity="0.8" />
+              <circle cx="4"  cy="29" r="1.8" fill="currentColor" opacity="0.8" />
+              <circle cx="36" cy="29" r="1.8" fill="currentColor" opacity="0.8" />
+            </svg>
+          )}
+          <span className="turner-fab__label">{sidebarOpen ? 'Close' : 'Turner AI'}</span>
         </button>
+      )}
+
+      {/* ── TURNER SIDEBAR ────────────────────────────────────────────────────── */}
+      {sidebarOpen && view !== 'brain' && view !== 'turner' && (
+        <TurnerSidebar
+          onExpand={() => { setSidebarOpen(false); setView('turner') }}
+          onClose={() => setSidebarOpen(false)}
+        />
       )}
     </div>
 )

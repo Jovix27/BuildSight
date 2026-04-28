@@ -645,8 +645,9 @@
 }
 
 .geoai-map-legend__swatch--warning {
-  background: var(--color-warning);
-  box-shadow: 0 0 10px rgba(255, 140, 0, 0.5);
+  background: rgba(160, 174, 192, 0.15);
+  border: 1px solid rgba(160, 174, 192, 0.4);
+  box-shadow: 0 0 15px rgba(160, 174, 192, 0.2);
 }
 
 .geoai-map-legend__swatch--safe {
@@ -878,8 +879,8 @@
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  opacity: 0.15;
-  background: linear-gradient(to bottom, transparent 0%, rgba(0, 229, 255, 0.1) 50%, transparent 100%);
+  opacity: 0.1;
+  background: linear-gradient(to bottom, transparent 0%, rgba(160, 174, 192, 0.1) 50%, transparent 100%);
   background-size: 100% 4px;
 }
 
@@ -890,8 +891,8 @@
   height: 120px;
   z-index: 1;
   pointer-events: none;
-  background: linear-gradient(to bottom, transparent, rgba(0, 229, 255, 0.15), transparent);
-  animation: geoai-scan-sweep 8s linear infinite;
+  background: linear-gradient(to bottom, transparent, rgba(160, 174, 192, 0.15), transparent);
+  animation: geoai-scan-sweep 12s linear infinite; /* Slower, smoother */
 }
 
 @keyframes geoai-scan-sweep {
@@ -920,12 +921,12 @@
 
 /* ── Toast Notifications ───────────────────────────── */
 .geoai-toast {
-  background: var(--color-surface-strong);
-  border: 1px solid var(--color-warning);
+  background: rgba(15, 18, 22, 0.95);
+  border: 1px solid rgba(160, 174, 192, 0.3);
   color: var(--color-text-strong);
   padding: 1rem;
-  border-radius: 4px;
-  box-shadow: 0 10px 30px rgba(255, 140, 0, 0.2);
+  border-radius: 8px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
   display: flex;
   align-items: center;
   gap: 1rem;

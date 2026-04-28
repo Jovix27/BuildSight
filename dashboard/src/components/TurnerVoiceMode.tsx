@@ -1,4 +1,4 @@
-import React, { useRef, useState, useEffect, useMemo } from 'react'
+import React, { useRef, useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import TurnerOrb3D from './TurnerOrb3D'
 import { useAudioAnalyzer } from '../hooks/useAudioAnalyzer'

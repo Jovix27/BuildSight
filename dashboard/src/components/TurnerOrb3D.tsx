@@ -1,9 +1,12 @@
 import React, { useEffect, useRef, useMemo } from 'react'
+import { useSettings } from '../SettingsContext'
 
 interface TurnerOrb3DProps {
   amplitude: number
   state: 'idle' | 'presenting' | 'thinking' | 'speaking' | 'listening'
   size?: number
+  variant?: 'standard' | 'god'
+  riskLevel?: number // 0 to 1 integration with GeoAI
 }
 
 // ── Types for Neural Geometry ──
@@ -23,33 +26,59 @@ interface SynapticPath {
   opacity: number;
 }
 
-const TurnerOrb3D: React.FC<TurnerOrb3DProps> = ({ 
-  amplitude, 
-  state, 
-  size = 400 
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '')
+  const r = parseInt(h.slice(0, 2), 16)
+  const g = parseInt(h.slice(2, 4), 16)
+  const b = parseInt(h.slice(4, 6), 16)
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`
+}
+
+const TurnerOrb3D: React.FC<TurnerOrb3DProps> = ({
+  amplitude,
+  state,
+  size = 400,
+  variant = 'standard',
+  riskLevel = 0
 }) => {
+  const { settings } = useSettings()
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const requestRef = useRef<number>(0)
   const rotationRef = useRef({ x: 0, y: 0, z: 0 })
-  
-  // ── Theme Mapping (BuildSight Professional) ──
+
+  // ── Theme Mapping ──
   const theme = useMemo(() => {
-    const colors = {
-      idle: { primary: '#00ffff', secondary: '#0088ff', core: '#ffffff', glow: 'rgba(0, 255, 255, 0.08)' },
-      speaking: { primary: '#00ffff', secondary: '#00f2ff', core: '#ffffff', glow: 'rgba(0, 255, 255, 0.25)' },
-      listening: { primary: '#4d79ff', secondary: '#2962ff', core: '#ffffff', glow: 'rgba(77, 121, 255, 0.2)' },
-      thinking: { primary: '#ffcc00', secondary: '#ff8800', core: '#ffffff', glow: 'rgba(255, 204, 0, 0.15)' },
-      presenting: { primary: '#00ffff', secondary: '#00ffcc', core: '#ffffff', glow: 'rgba(0, 255, 255, 0.15)' }
+    // God Mode keeps its own fixed palette — never follows accent color
+    if (variant === 'god') {
+      return {
+        primary: '#f8fafc',
+        secondary: '#94a3b8',
+        core: '#ffffff',
+        glow: 'rgba(226, 232, 240, 0.2)'
+      }
     }
-    return colors[state] || colors.idle
-  }, [state])
+
+    const accent = settings.accentColor || '#00ffff'
+    // Thinking state is semantic (cognitive state) — always white/grey
+    if (state === 'thinking') {
+      return { primary: '#f8fafc', secondary: '#94a3b8', core: '#ffffff', glow: 'rgba(248, 250, 252, 0.15)' }
+    }
+
+    const glowAlpha = state === 'speaking' ? 0.25 : state === 'presenting' ? 0.15 : 0.08
+    return {
+      primary:   accent,
+      secondary: accent,
+      core:      '#ffffff',
+      glow:      hexToRgba(accent, glowAlpha),
+    }
+  }, [state, variant, settings.accentColor])
 
   // ── Generate Neural Geometry once ──
   const neuralData = useMemo(() => {
     const points: NeuralPoint[] = []
     const paths: SynapticPath[] = []
-    const sphereRadius = size * 0.38
-    const nodeCount = 120 // Increased density
+    const sphereRadius = size * (variant === 'god' ? 0.45 : 0.38)
+    const nodeCount = variant === 'god' ? 240 : 120 // Highly dense for God Mode
 
     // 1. Generate nodes on sphere surface
     for (let i = 0; i < nodeCount; i++) {
@@ -75,14 +104,16 @@ const TurnerOrb3D: React.FC<TurnerOrb3DProps> = ({
       for (let j = i + 1; j < points.length; j++) {
         const other = points[j]
         const dist = Math.sqrt((p.x-other.x)**2 + (p.y-other.y)**2 + (p.z-other.z)**2)
-        if (dist < sphereRadius * 0.4 && p.connections.length < 3) {
+        const connectLimit = variant === 'god' ? 5 : 3
+        if (dist < sphereRadius * 0.4 && p.connections.length < connectLimit) {
           p.connections.push(j)
         }
       }
     })
 
     // 2. Generate synaptic paths (arcs)
-    for (let i = 0; i < 18; i++) {
+    const arcCount = variant === 'god' ? 32 : 18
+    for (let i = 0; i < arcCount; i++) {
       const pathPoints = []
       const segments = 24
       const startPhi = Math.random() * Math.PI * 2
@@ -108,8 +139,22 @@ const TurnerOrb3D: React.FC<TurnerOrb3DProps> = ({
       })
     }
 
-    return { points, paths, sphereRadius }
-  }, [size])
+    // 3. Clockwork Rings (exclusive to God Mode for that "Brain" feel)
+    const rings: { radiusX: number; radiusY: number; speed: number; tilt: number; opacity: number }[] = []
+    if (variant === 'god') {
+      for (let i = 0; i < 8; i++) {
+        rings.push({
+          radiusX: sphereRadius * (1.2 + i * 0.15),
+          radiusY: sphereRadius * (0.6 + i * 0.1),
+          speed: (Math.random() * 0.005 + 0.002) * (i % 2 === 0 ? 1 : -1),
+          tilt: (i / 8) * Math.PI,
+          opacity: 0.1 + (i * 0.05)
+        })
+      }
+    }
+
+    return { points, paths, rings, sphereRadius }
+  }, [size, variant])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -127,30 +172,62 @@ const TurnerOrb3D: React.FC<TurnerOrb3DProps> = ({
       const centerX = size / 2
       const centerY = size / 2
       
-      // Rotation logic
+      // Rotation logic - integrated with GeoAI riskLevel
       const baseRotation = state === 'idle' ? 0.0015 : (state === 'thinking' ? 0.02 : 0.006)
-      rotationRef.current.y += baseRotation + (amplitude * 0.04)
-      rotationRef.current.x = Math.sin(time * 0.0004) * 0.15
+      const riskBoost = riskLevel * 0.03
+      rotationRef.current.y += baseRotation + (amplitude * 0.04) + riskBoost
+      rotationRef.current.x = Math.sin(time * 0.0004) * (0.15 + riskLevel * 0.1)
       const { x: rotX, y: rotY } = rotationRef.current
 
       // Projection Helper
       const project = (p: { x: number; y: number; z: number }) => {
+        // Rotate Y
         let x1 = p.x * Math.cos(rotY) - p.z * Math.sin(rotY)
         let z1 = p.x * Math.sin(rotY) + p.z * Math.cos(rotY)
+        // Rotate X
         let y2 = p.y * Math.cos(rotX) - z1 * Math.sin(rotX)
         let z2 = p.y * Math.sin(rotX) + z1 * Math.cos(rotX)
         
-        const perspective = 1 + (z2 / (size * 0.6)) * 0.5
+        const fov = size * 1.5
+        const scale = fov / (fov + z2)
         return {
-          sx: x1 * perspective + centerX,
-          sy: y2 * perspective + centerY,
+          sx: centerX + x1 * scale,
+          sy: centerY + y2 * scale,
           sz: z2,
-          alpha: (z2 + neuralData.sphereRadius) / (neuralData.sphereRadius * 2.5)
+          alpha: scale * 0.8 // simple alpha based on depth
         }
       }
 
-      // 1. Global Glow
-      const bgGlow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, size * 0.5)
+      // ── Render Clockwork Rings (God Mode) ──
+      if (variant === 'god' && neuralData.rings) {
+        neuralData.rings.forEach((ring, idx) => {
+          ctx.beginPath()
+          ctx.strokeStyle = theme.primary
+          ctx.globalAlpha = ring.opacity * (0.5 + Math.sin(time * 0.001 + idx) * 0.5)
+          ctx.lineWidth = 0.5
+          
+          const ringRot = time * ring.speed
+          for (let i = 0; i <= 60; i++) {
+            const angle = (i / 60) * Math.PI * 2 + ringRot
+            const rx = Math.cos(angle) * ring.radiusX
+            const ry = Math.sin(angle) * ring.radiusY
+            
+            // Apply tilt and rotation
+            const tx = rx * Math.cos(ring.tilt) - ry * Math.sin(ring.tilt)
+            const ty = rx * Math.sin(ring.tilt) + ry * Math.cos(ring.tilt)
+            
+            // Rotate the entire ring system with the global Y rotation
+            const p = project({ x: tx, y: ty, z: 0 })
+            if (i === 0) ctx.moveTo(p.sx, p.sy)
+            else ctx.lineTo(p.sx, p.sy)
+          }
+          ctx.stroke()
+        })
+      }
+      ctx.globalAlpha = 1
+
+      // 1. Global Glow - intensifies with risk
+      const bgGlow = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, size * (0.5 + riskLevel * 0.1))
       bgGlow.addColorStop(0, theme.glow)
       bgGlow.addColorStop(1, 'rgba(0,0,0,0)')
       ctx.fillStyle = bgGlow
@@ -262,14 +339,14 @@ const TurnerOrb3D: React.FC<TurnerOrb3DProps> = ({
     return () => cancelAnimationFrame(requestRef.current)
   }, [amplitude, state, size, neuralData, theme])
 
+  const dropShadow = variant === 'god'
+    ? 'drop-shadow(0 0 50px rgba(226, 232, 240, 0.12))'
+    : `drop-shadow(0 0 50px ${hexToRgba(settings.accentColor || '#00ffff', 0.15)})`
+
   return (
-    <canvas 
-      ref={canvasRef} 
-      style={{ 
-        width: size, 
-        height: size, 
-        filter: 'drop-shadow(0 0 50px rgba(0, 255, 255, 0.15))' 
-      }} 
+    <canvas
+      ref={canvasRef}
+      style={{ width: size, height: size, filter: dropShadow }}
     />
   )
 }

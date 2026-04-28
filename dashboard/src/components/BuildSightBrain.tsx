@@ -7,6 +7,7 @@ import { GeoAIMap } from './GeoAIMap'
 import { VLMActivityFeed } from './VLMActivityFeed'
 import { DynamicZoneEditor } from './DynamicZoneEditor'
 import type { DynamicZone } from '../types/geoai'
+import TurnerOrb3D from './TurnerOrb3D'
 import './BuildSightBrain.css'
 
 interface BuildSightBrainProps {
@@ -40,7 +41,7 @@ const ORBITING_NODES = [
 const SPATIAL_ZONES = [
   { id: 'sz-1', label: 'EXCAVATION_A', coords: { x: -300, y: -200 }, color: '#3b82f6' },
   { id: 'sz-2', label: 'CRANE_RADIUS_01', coords: { x: 320,  y: -150 }, color: '#ff3b30' },
-  { id: 'sz-3', label: 'SCAFFOLD_Z4',    coords: { x: 280,  y: 220 },  color: '#ffaa00' },
+  { id: 'sz-3', label: 'SCAFFOLD_Z4',    coords: { x: 280,  y: 220 },  color: '#cbd5e1' },
   { id: 'sz-4', label: 'RESTRICTED_B',   coords: { x: -250, y: 180 },  color: '#ff3b30' },
 ]
 
@@ -96,6 +97,57 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
     geminiVerify: true, alertRouting: 'all', theme: 'cyber-dark',
     camPriority: 'smart', optimizeMode: 'live',
   })
+
+  // ── Geo-Neural Integration State ──
+  const geoRiskIntensity = useMemo(() => {
+    if (!geoData?.kpi?.avg_site_risk) return 0;
+    return Math.min(geoData.kpi.avg_site_risk / 10, 1);
+  }, [geoData]);
+
+  // Smooth the risk signal only until it converges; do not keep a perpetual RAF loop alive.
+  const [smoothedRisk, setSmoothedRisk] = useState(0)
+  useEffect(() => {
+    let animationFrame: number | null = null
+
+    const step = () => {
+      let shouldContinue = false
+
+      setSmoothedRisk((prev) => {
+        const diff = geoRiskIntensity - prev
+        if (Math.abs(diff) < 0.001) {
+          return geoRiskIntensity
+        }
+
+        shouldContinue = true
+        return prev + diff * 0.08
+      })
+
+      if (shouldContinue) {
+        animationFrame = requestAnimationFrame(step)
+      }
+    }
+
+    animationFrame = requestAnimationFrame(step)
+
+    return () => {
+      if (animationFrame !== null) {
+        cancelAnimationFrame(animationFrame)
+      }
+    }
+  }, [geoRiskIntensity])
+
+  const [lastGeoAlert, setLastGeoAlert] = useState<string | null>(null);
+
+  // Turner reactions to GeoAI events
+  useEffect(() => {
+    if (geoRiskIntensity > 0.7 && activeTab === 'geoai') {
+      const msg = `Elevated spatial risk detected (${(geoRiskIntensity * 10).toFixed(1)}). Turner AI prioritizing GeoAI analysis.`;
+      if (lastGeoAlert !== msg) {
+        setTurnerChat(prev => [{ id: Date.now(), text: msg, type: 'warn' }, ...prev.slice(0, 4)]);
+        setLastGeoAlert(msg);
+      }
+    }
+  }, [geoRiskIntensity, activeTab, lastGeoAlert]);
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -173,7 +225,7 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
         <div className="god-kpi-strip">
           <div className="god-kpi-item" onClick={() => openControlsFor('sensitivity')} style={{ cursor: 'pointer' }}>
             <span className="god-kpi-label">SITE RISK SCORE</span>
-            <span className="god-kpi-value" style={{ color: riskIntensity > 0.5 ? '#ff2a2a' : '#e2e8f0' }}>
+            <span className="god-kpi-value" style={{ color: riskIntensity > 0.5 ? '#ff2a2a' : '#f8fafc' }}>
               {(riskIntensity * 100).toFixed(1)}%
             </span>
           </div>
@@ -198,8 +250,8 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
 
         <div className="god-topbar-right">
           <div className="god-time">{timeStr}</div>
-          <button className="god-btn god-btn-lock" onClick={onLock}>LOCK SYSTEM</button>
-          <button className="god-btn god-btn-exit" onClick={onBack}>EXIT GOD MODE</button>
+          <button className="god-btn" onClick={onLock}>LOCK SYSTEM</button>
+          <button className="god-btn" onClick={onBack}>EXIT GOD MODE</button>
         </div>
       </header>
 
@@ -268,16 +320,42 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
         {/* CENTER STAGE — Neural Brain */}
         <section className="god-core-zone">
           <div className="god-brain-container">
+            {/* ── FLAGSHIP 3D BRAIN CORE ── */}
+            <div className="god-brain-orb-wrap">
+              <TurnerOrb3D 
+                amplitude={0} 
+                state="idle"
+                size={500}
+                variant="god"
+                riskLevel={smoothedRisk}
+              />
+            </div>
+
             <svg className="god-brain-connections">
               <circle cx="50%" cy="50%" r="220" stroke="rgba(226,232,240,0.1)" strokeWidth="1" fill="none" />
+              
+              {/* Dynamic Geo-Neural Link */}
+              <motion.line 
+                x1="50%" y1="50%" x2="50%" y2="100%" 
+                stroke={smoothedRisk > 0.5 ? "rgba(226, 232, 240, 0.4)" : "rgba(226, 232, 240, 0.1)"}
+                strokeWidth={2 + smoothedRisk * 3}
+                animate={{
+                  opacity: [0.1, 0.4, 0.1],
+                  strokeDashoffset: [0, -20]
+                }}
+                transition={{
+                  repeat: Infinity,
+                  duration: 2 - (smoothedRisk * 0.5), // Subtle change, not jerky
+                  ease: "linear"
+                }}
+                strokeDasharray="10 5"
+              />
+
               <line x1="50%" y1="50%" x2="20%" y2="20%" />
               <line x1="50%" y1="50%" x2="80%" y2="80%" />
               <line x1="50%" y1="50%" x2="80%" y2="20%" />
               <line x1="50%" y1="50%" x2="20%" y2="80%" />
             </svg>
-            <div className="god-brain-ring god-brain-ring-1" />
-            <div className="god-brain-ring god-brain-ring-2" />
-            <div className="god-brain-ring god-brain-ring-3" />
 
             {ORBITING_NODES.map((node, i) => {
               const angle  = (i / ORBITING_NODES.length) * Math.PI * 2
@@ -340,6 +418,7 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
               animate={{ scale: 1, opacity: 1 }}
               transition={{ duration: 1, ease: 'easeOut' }}
               onClick={() => openControlsFor('all')}
+              style={{ zIndex: 10 }}
             >
               <div className="god-brain-core-text">
                 BUILDSIGHT
@@ -354,9 +433,9 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
         <aside className="god-column god-column-right">
 
           <div className="god-tabs">
-            <button className={`god-tab ${activeTab === 'geoai'   ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('geoai')}>GEO AI</button>
-            <button className={`god-tab ${activeTab === 'turner'  ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('turner')}>TURNER AI</button>
-            <button className={`god-tab ${activeTab === 'cameras' ? 'god-tab--active' : ''}`} onClick={() => setActiveTab('cameras')}>CAMERAS</button>
+            <button className={`god-btn ${activeTab === 'geoai'   ? 'god-btn-primary' : ''}`} onClick={() => setActiveTab('geoai')}>GEO AI</button>
+            <button className={`god-btn ${activeTab === 'turner'  ? 'god-btn-primary' : ''}`} onClick={() => setActiveTab('turner')}>TURNER AI</button>
+            <button className={`god-btn ${activeTab === 'cameras' ? 'god-btn-primary' : ''}`} onClick={() => setActiveTab('cameras')}>CAMERAS</button>
           </div>
 
           <motion.div className="god-panel god-flex-grow" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: 0.1 }}>
@@ -366,9 +445,9 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
 
                 {/* ── GEO AI sub-tab bar ──────────────────────────────── */}
                 <div className="god-subtab-bar">
-                  <button className={`god-subtab ${geoSubTab === 'map'   ? 'god-subtab--active' : ''}`} onClick={() => setGeoSubTab('map')}>MAP</button>
-                  <button className={`god-subtab ${geoSubTab === 'vlm'   ? 'god-subtab--active' : ''}`} onClick={() => setGeoSubTab('vlm')}>VLM</button>
-                  <button className={`god-subtab ${geoSubTab === 'zones' ? 'god-subtab--active' : ''}`} onClick={() => setGeoSubTab('zones')}>ZONES</button>
+                  <button className={`god-btn god-btn-sm ${geoSubTab === 'map'   ? 'god-btn-primary' : ''}`} onClick={() => setGeoSubTab('map')}>MAP</button>
+                  <button className={`god-btn god-btn-sm ${geoSubTab === 'vlm'   ? 'god-btn-primary' : ''}`} onClick={() => setGeoSubTab('vlm')}>VLM</button>
+                  <button className={`god-btn god-btn-sm ${geoSubTab === 'zones' ? 'god-btn-primary' : ''}`} onClick={() => setGeoSubTab('zones')}>ZONES</button>
                   <span className={`god-badge god-subtab-badge ${geoDemo ? 'god-badge--amber' : 'god-badge--ok'}`}>
                     {geoDemo ? 'DEMO' : 'LIVE'}
                   </span>
@@ -379,12 +458,12 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
                   <>
                     {/* View mode + layer toggles */}
                     <div className="god-geoai-toolbar">
-                      <button className={`god-map-toggle ${mapViewMode === 'tactical'  ? 'god-map-toggle--active' : ''}`} onClick={() => setMapViewMode('tactical')}>TACT</button>
-                      <button className={`god-map-toggle ${mapViewMode === 'satellite' ? 'god-map-toggle--active' : ''}`} onClick={() => setMapViewMode('satellite')}>SAT</button>
+                      <button className={`god-btn god-btn-xs ${mapViewMode === 'tactical'  ? 'god-btn-primary' : ''}`} onClick={() => setMapViewMode('tactical')}>TACT</button>
+                      <button className={`god-btn god-btn-xs ${mapViewMode === 'satellite' ? 'god-btn-primary' : ''}`} onClick={() => setMapViewMode('satellite')}>SAT</button>
                       {(Object.keys(mapLayers) as Array<keyof typeof mapLayers>).map(key => (
                         <button
                           key={key}
-                          className={`god-map-layer-btn ${mapLayers[key] ? 'god-map-layer-btn--on' : ''}`}
+                          className={`god-btn god-btn-xs ${mapLayers[key] ? 'god-btn-primary' : ''}`}
                           onClick={() => toggleLayer(key)}
                         >
                           {key === 'cameraFOV' ? 'FOV' : key === 'heatmap' ? 'HEAT' : key === 'workers' ? 'W' : key === 'zones' ? 'Z' : 'L'}
@@ -427,7 +506,7 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
                       </div>
                       <div className="god-metric-row">
                         <span>Avg Site Risk</span>
-                        <strong style={{ color: (geoData?.kpi?.avg_site_risk ?? 0) > 0.5 ? '#ffaa00' : '#00ff80' }}>
+                        <strong style={{ color: (geoData?.kpi?.avg_site_risk ?? 0) > 0.5 ? '#f8fafc' : '#00ff80' }}>
                           {geoData?.kpi ? (geoData.kpi.avg_site_risk * 100).toFixed(0) + '%' : '—'}
                         </strong>
                       </div>
@@ -487,7 +566,7 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
                     onChange={e => setTurnerInput(e.target.value)}
                     onKeyDown={e => e.key === 'Enter' && handleTurnerSubmit()}
                   />
-                  <button onClick={handleTurnerSubmit}>EXECUTE</button>
+                  <button className="god-btn-primary" onClick={handleTurnerSubmit}>EXECUTE</button>
                 </div>
               </div>
             )}
@@ -519,19 +598,30 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
       </main>
 
       {/* ── FOOTER CONTROLS DRAWER ────────────────────────────────────────── */}
-      <div className={`god-drawer ${controlsOpen ? 'god-drawer--open' : ''}`}>
-        <div className="god-drawer-overlay" onClick={() => { setControlsOpen(false); setActiveControlGroup(null) }} />
-        <div className="god-drawer-content">
-          <div className="god-drawer-header">
-            <h3>{activeControlGroup === 'all' ? 'MASTER SYSTEM OVERRIDES' : 'SPECIFIC SYSTEM OVERRIDE'}</h3>
-            <button className="god-btn god-btn-primary" onClick={() => { setControlsOpen(false); setActiveControlGroup(null) }}>
-              CLOSE OVERRIDES
-            </button>
-          </div>
+      <AnimatePresence>
+        {controlsOpen && (
+          <motion.div
+            className="god-drawer god-drawer--open"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <div className="god-drawer-overlay" onClick={() => { setControlsOpen(false); setActiveControlGroup(null) }} />
+            <motion.div
+              className="god-drawer-content"
+              initial={{ y: '100%' }}
+              animate={{ y: 0 }}
+              exit={{ y: '100%' }}
+              transition={{ type: 'spring', stiffness: 260, damping: 28 }}
+            >
+              <div className="god-drawer-header">
+                <h3>{activeControlGroup === 'all' ? 'MASTER SYSTEM OVERRIDES' : 'SPECIFIC SYSTEM OVERRIDE'}</h3>
+                <button className="god-btn god-btn-primary" onClick={() => { setControlsOpen(false); setActiveControlGroup(null) }}>
+                  CLOSE OVERRIDES
+                </button>
+              </div>
 
-          <AnimatePresence>
-            {controlsOpen && (
-              <motion.div initial={{ height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={{ height: 0, opacity: 0 }}>
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
                 <div className={`god-param-grid ${activeControlGroup && activeControlGroup !== 'all' ? 'god-param-grid--single' : ''}`}>
 
                   {showGroup('thresholds') && (
@@ -677,10 +767,10 @@ export function BuildSightBrain({ onBack, onLock }: BuildSightBrainProps) {
 
                 </div>
               </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      </div>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   )
 }

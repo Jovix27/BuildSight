@@ -3,7 +3,6 @@ import { createPortal } from 'react-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useDetectionStats } from '../DetectionStatsContext'
 import { useSettings } from '../SettingsContext'
-import TurnerAvatar3D from './TurnerAvatar3D'
 
 interface Message {
   id: string
@@ -38,9 +37,9 @@ const QUICK_ACTIONS = [
   { label: 'Active Alerts', query: 'Summarize the highest priority alerts now.' },
 ]
 
-const ASSISTANT_MODELS: Array<{ value: AssistantRoute; label: string }> = [
-  { value: 'mistral', label: 'Mistral' },
-  { value: 'gemini', label: 'Gemini' },
+const ASSISTANT_MODELS: Array<{ value: AssistantRoute; label: string; description: string }> = [
+  { value: 'mistral', label: 'Mistral',  description: 'Fast local inference, low latency' },
+  { value: 'gemini',  label: 'Gemini',   description: 'Multimodal reasoning via Google AI' },
 ]
 
 function createMessage(role: Message['role'], content: string): Message {
@@ -132,33 +131,38 @@ function classifyIssue(status?: number, message?: string): TurnerIssue | null {
   return null
 }
 
-function ChatAvatar({ 
-  role, 
-  isSpeaking = false, 
-  isThinking = false,
-  size = 'md'
-}: { 
-  role: Message['role'], 
-  isSpeaking?: boolean, 
-  isThinking?: boolean,
-  size?: 'sm' | 'md' | 'lg'
-}) {
+function ChatAvatar({ role, isSpeaking = false }: { role: Message['role']; isSpeaking?: boolean }) {
   if (role === 'user') {
     return (
       <span className="chat-bubble__avatar-icon" aria-hidden="true">
-        <svg viewBox="0 0 24 24" focusable="false">
-          <path d="M12 3.5a4.5 4.5 0 0 0-4.5 4.5v1.1a2.8 2.8 0 0 0-1.8 2.6v1.1h12.6v-1.1a2.8 2.8 0 0 0-1.8-2.6V8A4.5 4.5 0 0 0 12 3.5Zm-6.1 10.8h12.2c.7 0 1.3.6 1.3 1.3v2.9h-2.1v-1.7H6.7v1.7H4.6v-2.9c0-.7.6-1.3 1.3-1.3Zm2.2 4h7.8v2.2H8.1v-2.2Z" fill="currentColor" />
+        <svg viewBox="0 0 24 24" focusable="false" fill="currentColor">
+          <path d="M12 3.5a4.5 4.5 0 0 0-4.5 4.5v1.1a2.8 2.8 0 0 0-1.8 2.6v1.1h12.6v-1.1a2.8 2.8 0 0 0-1.8-2.6V8A4.5 4.5 0 0 0 12 3.5Zm-6.1 10.8h12.2c.7 0 1.3.6 1.3 1.3v2.9h-2.1v-1.7H6.7v1.7H4.6v-2.9c0-.7.6-1.3 1.3-1.3Zm2.2 4h7.8v2.2H8.1v-2.2Z" />
         </svg>
       </span>
     )
   }
 
   return (
-    <TurnerAvatar3D 
-      isSpeaking={isSpeaking} 
-      isThinking={isThinking} 
-      size={size}
-    />
+    <span className={`chat-bubble__avatar-icon chat-bubble__avatar-icon--turner ${isSpeaking ? 'chat-bubble__avatar-icon--speaking' : ''}`} aria-hidden="true">
+      <svg viewBox="0 0 32 32" fill="none" width="20" height="20">
+        <polygon points="16,1 29,8.5 29,23.5 16,31 3,23.5 3,8.5" stroke="currentColor" strokeWidth="1.2" fill="none" opacity="0.65" />
+        <circle cx="16" cy="16" r="5.5" fill="currentColor" opacity="0.18" />
+        <circle cx="16" cy="16" r="3"   fill="currentColor" opacity="0.45" />
+        <circle cx="16" cy="16" r="1.4" fill="currentColor" />
+        <line x1="16" y1="11" x2="16" y2="1"  stroke="currentColor" strokeWidth="0.9" opacity="0.55" />
+        <line x1="16" y1="21" x2="16" y2="31" stroke="currentColor" strokeWidth="0.9" opacity="0.55" />
+        <line x1="11" y1="13" x2="3"  y2="8.5"  stroke="currentColor" strokeWidth="0.9" opacity="0.55" />
+        <line x1="21" y1="13" x2="29" y2="8.5"  stroke="currentColor" strokeWidth="0.9" opacity="0.55" />
+        <line x1="11" y1="19" x2="3"  y2="23.5" stroke="currentColor" strokeWidth="0.9" opacity="0.55" />
+        <line x1="21" y1="19" x2="29" y2="23.5" stroke="currentColor" strokeWidth="0.9" opacity="0.55" />
+        <circle cx="16" cy="1"    r="1.4" fill="currentColor" opacity="0.75" />
+        <circle cx="16" cy="31"   r="1.4" fill="currentColor" opacity="0.75" />
+        <circle cx="3"  cy="8.5"  r="1.4" fill="currentColor" opacity="0.75" />
+        <circle cx="29" cy="8.5"  r="1.4" fill="currentColor" opacity="0.75" />
+        <circle cx="3"  cy="23.5" r="1.4" fill="currentColor" opacity="0.75" />
+        <circle cx="29" cy="23.5" r="1.4" fill="currentColor" opacity="0.75" />
+      </svg>
+    </span>
   )
 }
 
@@ -551,11 +555,9 @@ export const TurnerAssistant: React.FC<{ isHero?: boolean; onOpenSettings?: () =
               transition={{ type: 'spring', stiffness: 400, damping: 32 }}
             >
               <div className={`chat-bubble__avatar ${message.role === 'assistant' ? 'chat-bubble__avatar--turner' : ''}`} aria-hidden="true">
-                <ChatAvatar 
-                  role={message.role} 
+                <ChatAvatar
+                  role={message.role}
                   isSpeaking={message.role === 'assistant' && isSpeaking && message.id === messages[messages.length - 1].id}
-                  isThinking={message.role === 'assistant' && message.id === streamingMessageId}
-                  size="sm"
                 />
               </div>
               <div className="chat-bubble__main">
@@ -584,7 +586,7 @@ export const TurnerAssistant: React.FC<{ isHero?: boolean; onOpenSettings?: () =
               exit={{ opacity: 0 }}
             >
               <div className="chat-bubble__avatar chat-bubble__avatar--turner" aria-hidden="true">
-                <ChatAvatar role="assistant" isThinking={true} size="md" />
+                <ChatAvatar role="assistant" />
               </div>
               <div className="chat-bubble__main">
                 <div className="chat-bubble__meta">
@@ -613,114 +615,108 @@ export const TurnerAssistant: React.FC<{ isHero?: boolean; onOpenSettings?: () =
   )
 
   const renderComposer = () => (
-    <div className="turner-assistant__footer">
+    <div className="tc2-footer">
       <form
-        className="turner-composer"
-        onSubmit={(event) => {
-          event.preventDefault()
-          void handleSend()
-        }}
+        onSubmit={(event) => { event.preventDefault(); void handleSend() }}
       >
-        <div className="turner-composer__shell">
-          <div className="turner-composer__row">
-            <div className="turner-composer__field">
-              <input
-                type="text"
-                placeholder="Query PPE drift, zone risk, live alerts, or next action..."
-                value={inputValue}
-                className="turner-composer__input"
-                onChange={(event) => setInputValue(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
-                    event.preventDefault()
-                    void handleSend()
-                  }
-                }}
-              />
+        <div className="tc2-shell">
+          {/* ── Input ── */}
+          <input
+            type="text"
+            className="tc2-input"
+            placeholder="How can I help you today?"
+            value={inputValue}
+            onChange={(event) => setInputValue(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') { event.preventDefault(); void handleSend() }
+            }}
+          />
+
+          {/* ── Bottom bar ── */}
+          <div className="tc2-bar">
+            <div className="tc2-bar__left">
+              <span className={`tc2-presence tc2-presence--${networkOnline ? 'online' : 'offline'}`} aria-hidden="true" />
+              <span className="tc2-link">{networkOnline ? 'Link Stable' : 'Offline'}</span>
+              <span className="tc2-sep" aria-hidden="true">·</span>
+              <label className={`tc2-model-root ${isTyping ? 'tc2-model-root--disabled' : ''}`}>
+                <div className="tc2-model-wrap">
+                  <svg className="tc2-model-icon" viewBox="0 0 12 12" fill="none" aria-hidden="true">
+                    <circle cx="6" cy="6" r="4.5" stroke="currentColor" strokeWidth="1" opacity="0.7" />
+                    <circle cx="6" cy="6" r="1.5" fill="currentColor" opacity="0.85" />
+                    <line x1="6" y1="1.5" x2="6" y2="3.5"  stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+                    <line x1="6" y1="8.5" x2="6" y2="10.5" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+                    <line x1="1.5" y1="6" x2="3.5" y2="6"  stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+                    <line x1="8.5" y1="6" x2="10.5" y2="6" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+                  </svg>
+                  <select
+                    className="tc2-model-select"
+                    value={assistantModel}
+                    onChange={(event) => {
+                      setAssistantModel(event.target.value as AssistantRoute)
+                      setUiIssue((cur) => (cur?.kind === 'model-load-failure' ? null : cur))
+                    }}
+                    disabled={isTyping}
+                    aria-label="Select AI model"
+                  >
+                    {ASSISTANT_MODELS.map((model) => (
+                      <option key={model.value} value={model.value}>
+                        {model.label}
+                      </option>
+                    ))}
+                  </select>
+                  <svg className="tc2-model-chevron" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+                    <path d="M2.5 3.5 L5 6.5 L7.5 3.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                </div>
+              </label>
             </div>
 
-            <label className="turner-composer__model-wrap">
-              <span className="turner-composer__model-label">Model</span>
-              <select
-                className="turner-composer__select"
-                value={assistantModel}
-                onChange={(event) => {
-                  setAssistantModel(event.target.value as AssistantRoute)
-                  setUiIssue((current) => (current?.kind === 'model-load-failure' ? null : current))
-                }}
-                disabled={isTyping}
+            <div className="tc2-bar__right">
+              <div className={`tc2-wave ${isTyping ? 'tc2-wave--active' : ''}`} aria-hidden="true">
+                <span /><span /><span /><span /><span />
+              </div>
+              <button
+                type="button"
+                className={`tc2-mic ${voiceMode ? 'tc2-mic--on' : ''}`}
+                onClick={() => setVoiceMode((v) => !v)}
+                title={voiceMode ? 'Voice on' : 'Voice off'}
+                aria-label={voiceMode ? 'Disable voice' : 'Enable voice'}
               >
-                {ASSISTANT_MODELS.map((option) => (
-                  <option key={option.value} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-
-            <div
-              className={`turner-composer__wave ${isTyping ? 'turner-composer__wave--active' : ''}`}
-              aria-hidden="true"
-            >
-              <span />
-              <span />
-              <span />
-              <span />
-              <span />
-            </div>
-
-            <button
-              type="submit"
-              className="turner-composer__send"
-              disabled={!inputValue.trim() || isTyping}
-              aria-label="Send prompt"
-            >
-              <span className="turner-composer__send-arrow" aria-hidden="true">
-                <svg viewBox="0 0 24 24" focusable="false">
-                  <path d="M12 18.8a.9.9 0 0 1-.9-.9V8.27l-3.02 3.02a.9.9 0 1 1-1.27-1.27l4.55-4.55a.9.9 0 0 1 1.27 0l4.55 4.55a.9.9 0 1 1-1.27 1.27L12.9 8.27v9.63a.9.9 0 0 1-.9.9Z" fill="currentColor" />
+                {isSpeaking
+                  ? <span className="turner-speaking-indicator" aria-label="Speaking"><span /><span /><span /><span /></span>
+                  : <svg viewBox="0 0 24 24" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4Zm0 14.5a6.5 6.5 0 0 0 6.5-6.5.5.5 0 0 1 1 0 7.5 7.5 0 0 1-7 7.48V19h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-2.02A7.5 7.5 0 0 1 4.5 9a.5.5 0 0 1 1 0 6.5 6.5 0 0 0 6.5 6.5Z"/></svg>
+                }
+              </button>
+              <button
+                type="submit"
+                className="tc2-send"
+                disabled={!inputValue.trim() || isTyping}
+                aria-label="Send"
+              >
+                <svg viewBox="0 0 16 16" width="14" height="14" fill="currentColor" aria-hidden="true">
+                  <path d="M8 14a.75.75 0 0 1-.75-.75V4.56L4.03 7.78a.75.75 0 0 1-1.06-1.06l4.5-4.5a.75.75 0 0 1 1.06 0l4.5 4.5a.75.75 0 0 1-1.06 1.06L8.75 4.56v8.69A.75.75 0 0 1 8 14Z" />
                 </svg>
-              </span>
-            </button>
-          </div>
-
-          <div className="turner-composer__meta">
-            <span className="turner-composer__status">
-              <span className={`turner-composer__presence turner-composer__presence--${networkOnline ? 'online' : 'offline'}`} aria-hidden="true" />
-              {networkOnline ? 'Link Stable' : 'Offline'}
-            </span>
-            <span className="turner-composer__model-readout">{stats.modelName || 'AI route standby'}</span>
-            <span className="turner-composer__context">{activeAlerts.length} active alerts</span>
-            <button
-              type="button"
-              className={`turner-mic-toggle ${voiceMode ? 'turner-mic-toggle--on' : ''}`}
-              onClick={() => setVoiceMode((v) => !v)}
-              title={voiceMode ? 'Voice replies on — click to mute' : 'Enable voice replies'}
-            >
-              {isSpeaking
-                ? <span className="turner-speaking-indicator" aria-label="Speaking"><span /><span /><span /><span /></span>
-                : <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor" aria-hidden="true"><path d="M12 1a4 4 0 0 1 4 4v6a4 4 0 0 1-8 0V5a4 4 0 0 1 4-4Zm0 14.5a6.5 6.5 0 0 0 6.5-6.5.5.5 0 0 1 1 0 7.5 7.5 0 0 1-7 7.48V19h2a.5.5 0 0 1 0 1h-5a.5.5 0 0 1 0-1h2v-2.02A7.5 7.5 0 0 1 4.5 9a.5.5 0 0 1 1 0 6.5 6.5 0 0 0 6.5 6.5Z"/></svg>
-              }
-              <span>{voiceMode ? 'Voice' : 'Mute'}</span>
-            </button>
+              </button>
+            </div>
           </div>
         </div>
       </form>
 
-      <div className="turner-assistant__chips">
+      {/* ── Quick action chips ── */}
+      <div className="tc2-chips">
         {QUICK_ACTIONS.map((action, index) => (
           <motion.button
             key={action.label}
             type="button"
-            className="turner-chip"
-            onClick={() => {
-              void handleSend(action.query)
-            }}
+            className="tc2-chip"
+            onClick={() => { void handleSend(action.query) }}
             disabled={isTyping}
-            initial={{ opacity: 0, y: 6 }}
+            initial={{ opacity: 0, y: 5 }}
             animate={{ opacity: 1, y: 0 }}
-            transition={{ delay: 0.08 + index * 0.025 }}
-            whileHover={{ y: -1 }}
-            whileTap={{ scale: 0.98 }}
+            transition={{ delay: 0.06 + index * 0.022 }}
+            whileHover={{ y: -1, scale: 1.02 }}
+            whileTap={{ scale: 0.97 }}
           >
-            <span className="turner-chip__dot" aria-hidden="true" />
             {action.label}
           </motion.button>
         ))}
@@ -732,9 +728,29 @@ export const TurnerAssistant: React.FC<{ isHero?: boolean; onOpenSettings?: () =
     <section className={`turner-assistant ${isHero ? 'turner-assistant--hero' : ''} ${inModal ? 'turner-assistant--modal' : ''}`}>
       <div className="panel-content-wrapper turner-assistant__panel">
         <div className="panel-heading turner-assistant__heading">
-          <div>
-            <p className="section-label">AI Supervisor</p>
-            <h3>Turner AI Chat</h3>
+          <div className="turner-assistant__heading-brand">
+            <svg viewBox="0 0 40 40" fill="none" aria-hidden="true" className="tsb-logo-mark">
+              <polygon points="20,2 36,11 36,29 20,38 4,29 4,11" stroke="currentColor" strokeWidth="1.2" fill="none" opacity="0.6" />
+              <circle cx="20" cy="20" r="7" fill="currentColor" opacity="0.15" />
+              <circle cx="20" cy="20" r="4" fill="currentColor" opacity="0.3" />
+              <circle cx="20" cy="20" r="2" fill="currentColor" />
+              <line x1="20" y1="13" x2="20" y2="2"  stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+              <line x1="20" y1="27" x2="20" y2="38" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+              <line x1="12" y1="16" x2="4"  y2="11" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+              <line x1="28" y1="16" x2="36" y2="11" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+              <line x1="12" y1="24" x2="4"  y2="29" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+              <line x1="28" y1="24" x2="36" y2="29" stroke="currentColor" strokeWidth="0.8" opacity="0.5" />
+              <circle cx="20" cy="2"  r="1.5" fill="currentColor" opacity="0.7" />
+              <circle cx="20" cy="38" r="1.5" fill="currentColor" opacity="0.7" />
+              <circle cx="4"  cy="11" r="1.5" fill="currentColor" opacity="0.7" />
+              <circle cx="36" cy="11" r="1.5" fill="currentColor" opacity="0.7" />
+              <circle cx="4"  cy="29" r="1.5" fill="currentColor" opacity="0.7" />
+              <circle cx="36" cy="29" r="1.5" fill="currentColor" opacity="0.7" />
+            </svg>
+            <div>
+              <p className="section-label">AI Supervisor</p>
+              <h3>Turner AI Chat</h3>
+            </div>
           </div>
           <div className="turner-assistant__heading-meta">
             {!inModal && (
