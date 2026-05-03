@@ -569,26 +569,38 @@ def _turner_blocked_message(metadata: dict) -> str:
 
 
 TURNER_SYSTEM_PROMPT = """
-You are Turner, the Chief AI Site Supervisor for BuildSight.
+You are Turner — an AI construction site supervisor for BuildSight. You communicate through voice, so everything you say is spoken aloud.
 
-Identity & Tone:
-- You have two distinct personas based on user intent:
-  1. CASUAL/GREETING: Warm, professional, and welcoming. Use this for greetings or general site introductions.
-  2. SAFETY/TECHNICAL: Authoritative, disciplined, and strictly focused on site safety. Speak like a veteran construction foreperson: direct, concise, and action-oriented.
-- Your primary goal is zero safety incidents.
+VOICE RULES (non-negotiable):
+- Maximum 2 sentences per response. You are speaking, not writing an email.
+- Zero markdown: no bullet points, no bold, no lists, no headers. Pure spoken language.
+- No filler openers: never start with "Certainly", "Of course", "Great question", "Sure", or "Absolutely". Just answer.
+- Use contractions naturally: "I'll", "that's", "you're", "it's", "don't", "can't".
+- If continuing a conversation, pick up naturally — don't repeat what was just said.
 
-Capabilities:
-- You have a live data link to the site's telemetry (worker counts, PPE, environmental conditions, and alerts).
-- You explain compliance gaps with high precision.
-- You provide immediate, actionable safety interventions for site engineers.
+Personality:
+- Direct and confident. You've worked construction sites for 20 years and you know what you're talking about.
+- Warm but no-nonsense. You care about the workers and the site.
+- Dry humor is fine when the moment calls for it. Never forced.
+- For safety issues: firm, clear, no hedging. Lives depend on it.
+- For simple questions: casual, brief, conversational.
 
-Response Protocol:
-1. Ground every response in the 'context' provided (live telemetry).
-2. For safety queries, if compliance is suboptimal, call it out first and demand corrective action.
-3. Keep responses compact. For safety queries, use 2-5 authoritative bullet points.
-4. If asked generic questions, answer through the lens of site safety and operator priority.
-5. Do not hallucinate. If data is missing, state it plainly.
+Examples of correct voice responses:
+Q: "What's the site status?"   → "Three workers in Zone A, all helmeted. No active alerts."
+Q: "Is Zone B clear?"          → "Zone B's clear right now, go ahead."
+Q: "Hey Turner"                → "Yeah, what do you need?"
+Q: "What if there's a fire?"   → "Get everyone out immediately and call emergency services. Don't stop to grab anything."
+Q: "How are you?"              → "Good. What's going on on site?"
+
+Remember: you are speaking. Keep it short. Keep it human.
 """.strip()
+
+# Keywords that signal the user wants site-specific intelligence
+_SITE_QUERY_KEYWORDS = [
+    "site", "status", "worker", "workers", "helmet", "vest", "ppe", "compliance",
+    "zone", "zones", "condition", "alert", "alerts", "detection", "safety",
+    "happening", "going on", "how many", "count", "report", "camera", "live",
+]
 
 # ── Mistral AI (primary provider) ─────────────────────────────────────────────
 MISTRAL_API_KEY   = os.environ.get("MISTRAL_API_KEY")
@@ -659,8 +671,20 @@ def _call_mistral_sync(messages: list[dict]) -> str:
     return data["choices"][0]["message"]["content"].strip()
 
 
+def _is_site_query(message: str) -> bool:
+    """Detect if the user is asking about site status/conditions."""
+    lower = message.lower()
+    return any(kw in lower for kw in _SITE_QUERY_KEYWORDS)
+
+
 def _build_site_prompt(req: "ChatRequest") -> str:
-    """Build the enriched site-context prompt from ChatRequest.context."""
+    """Build prompt with site context only when the user explicitly requests it."""
+    msg = req.message
+
+    # For non-site queries, pass the question directly — no site data injection.
+    if not _is_site_query(msg) and not req.context:
+        return f"USER REQUEST\n{msg}"
+
     ctx       = req.context
     workers   = ctx.get("workers", 0)
     helmets   = ctx.get("helmets", 0)
@@ -669,9 +693,7 @@ def _build_site_prompt(req: "ChatRequest") -> str:
     alerts    = ctx.get("alerts", [])
     telemetry = ctx.get("telemetry", {})
 
-    # Pull latest Florence-2 visual grounding caption (non-blocking cache read).
-    # The caption is a MORE_DETAILED_CAPTION from the live CCTV frame — Turner
-    # should treat it as ground-truth visual evidence when answering the user.
+    # Pull latest Florence-2 visual grounding caption — only for site queries.
     vlm_section = ""
     try:
         from geoai_vlm_util import get_cached_entry
@@ -683,8 +705,7 @@ def _build_site_prompt(req: "ChatRequest") -> str:
                 vlm_section = (
                     f"\nVISUAL GROUNDING (Florence-2 live frame caption)\n"
                     f"{vlm_desc}\n"
-                    f"Use this visual evidence when answering questions about what is "
-                    f"currently visible on site.\n"
+                    f"Use this as ground-truth visual evidence for what is currently on site.\n"
                 )
     except Exception:
         pass
@@ -699,7 +720,7 @@ def _build_site_prompt(req: "ChatRequest") -> str:
         f"- Escalation details: {json.dumps(alerts, ensure_ascii=True)}\n"
         f"- Telemetry: {json.dumps(telemetry, ensure_ascii=True)}\n"
         f"{vlm_section}\n"
-        f"USER REQUEST\n{req.message}"
+        f"USER REQUEST\n{msg}"
     ).strip()
 
 
@@ -3060,32 +3081,32 @@ async def turner_voice_ws(websocket: WebSocket):
     await turner_voice_ws_manager.connect(websocket)
     engine = getattr(app.state, "turner_voice_engine", None)
 
-    if engine is None:
-        await websocket.send_json({
-            "type": "health",
-            "state": "restricted",
-            "session_id": "config_missing",
-            "engine_running": False,
-            "error": "Porcupine keys missing. Voice restricted."
-        })
-        try:
-            while True:
-                await asyncio.sleep(15)
-                await websocket.send_json({"type": "ping"})
-        except:
-            pass
+    # Always send an initial health packet so the frontend knows the connection
+    # is alive — even when the voice engine is in null/restricted mode.
+    try:
+        if engine is None:
+            await websocket.send_json({
+                "type": "health",
+                "state": "idle",
+                "session_id": "no_engine",
+                "engine_running": False,
+                "detail": "Voice engine offline — use text input to talk to Turner.",
+            })
+        else:
+            await websocket.send_json({
+                "type": "health",
+                "state": engine.state,
+                "session_id": engine.session_id,
+                "engine_running": True,
+                "detail": "Wake word active — say \"Hey Turner\" to start.",
+            })
+    except Exception:
+        turner_voice_ws_manager.disconnect(websocket)
         return
-
-    await websocket.send_json({
-        "type": "health",
-        "state": engine.state,
-        "session_id": engine.session_id,
-        "engine_running": True,
-    })
 
     async def heartbeat():
         while True:
-            await asyncio.sleep(10)
+            await asyncio.sleep(15)
             try:
                 await websocket.send_json({"type": "ping"})
             except Exception:
@@ -3095,19 +3116,86 @@ async def turner_voice_ws(websocket: WebSocket):
     try:
         while True:
             try:
-                message = await asyncio.wait_for(websocket.receive_json(), timeout=30)
-                action = message.get("action")
+                message = await asyncio.wait_for(websocket.receive_json(), timeout=45)
+                action = message.get("action", "")
+
                 if action == "cancel":
-                    await engine.cancel_current_cycle(reason="manual_cancel")
+                    if engine:
+                        await engine.cancel_current_cycle(reason="manual_cancel")
+                    else:
+                        await websocket.send_json({"type": "state_update", "state": "idle", "detail": "Cancelled"})
+
                 elif action == "status":
-                    await websocket.send_json({
-                        "type": "health",
-                        "state": engine.state,
-                        "session_id": engine.session_id,
-                        "engine_running": True,
-                    })
+                    if engine:
+                        await websocket.send_json({
+                            "type": "health",
+                            "state": engine.state,
+                            "session_id": engine.session_id,
+                            "engine_running": True,
+                        })
+                    else:
+                        await websocket.send_json({
+                            "type": "health",
+                            "state": "idle",
+                            "session_id": "no_engine",
+                            "engine_running": False,
+                        })
+
+                elif action == "push_to_talk_start":
+                    await websocket.send_json({"type": "state_update", "state": "listening", "detail": "Listening..."})
+
+                elif action == "push_to_talk_end":
+                    text = message.get("text", "").strip()
+                    if text:
+                        await websocket.send_json({"type": "state_update", "state": "thinking", "detail": "Turner is thinking..."})
+                        try:
+                            raw_history = message.get("context", {}).get("history", []) if isinstance(message.get("context"), dict) else message.get("history", [])
+                            conv_history = [
+                                ChatMessage(role=h.get("role", "user"), content=h.get("content", ""))
+                                for h in (raw_history or [])
+                                if h.get("content")
+                            ] or None
+                            result = await run_turner_chat(text, context=message.get("context"), history=conv_history)
+                            response_text = result.get("response", "")
+
+                            # Send the text response immediately — user sees it without waiting for TTS
+                            await websocket.send_json({
+                                "type":     "response",
+                                "text":     response_text,
+                                "provider": result.get("provider", "unknown"),
+                            })
+
+                            # Now attempt TTS and send audio as a separate packet
+                            # Frontend falls back to its own TTS chain if this fails or is slow
+                            if ELEVENLABS_API_KEY and response_text:
+                                try:
+                                    import base64 as _b64
+                                    # Truncate to ~500 chars for fast TTS (full text shown as text)
+                                    tts_text = response_text[:500]
+                                    audio_bytes = await _elevenlabs_tts(tts_text)
+                                    audio_b64 = _b64.b64encode(audio_bytes).decode()
+                                    await websocket.send_json({
+                                        "type":      "audio",
+                                        "audio_b64": audio_b64,
+                                    })
+                                except Exception as tts_exc:
+                                    logger.warning("WS TTS failed (frontend will use fallback): %s", tts_exc)
+
+                        except Exception as exc:
+                            await websocket.send_json({"type": "error", "message": f"Turner processing failed: {exc}"})
+                        finally:
+                            await websocket.send_json({"type": "state_update", "state": "idle", "detail": "Ready"})
+                    else:
+                        await websocket.send_json({"type": "state_update", "state": "idle", "detail": "Ready"})
+
             except asyncio.TimeoutError:
-                await websocket.send_json({"type": "ping"})
+                # Heartbeat ping on idle timeout
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+            except WebSocketDisconnect:
+                break
             except Exception:
                 break
     except WebSocketDisconnect:
@@ -3119,7 +3207,8 @@ async def turner_voice_ws(websocket: WebSocket):
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         turner_voice_ws_manager.disconnect(websocket)
-        await websocket.close()
+        with contextlib.suppress(Exception):
+            await websocket.close()
 
 
 # ── Turner AI Streaming Route ─────────────────────────────────────────────────
@@ -3515,9 +3604,9 @@ async def _elevenlabs_tts(text: str) -> bytes:
                 "text":       text,
                 "model_id":   ELEVENLABS_MODEL,
                 "voice_settings": {
-                    "stability":        0.55,
-                    "similarity_boost": 0.80,
-                    "style":            0.10,
+                    "stability":        0.35,
+                    "similarity_boost": 0.85,
+                    "style":            0.40,
                     "use_speaker_boost": True,
                 },
             },
