@@ -2699,12 +2699,87 @@ async def get_worker_positions():
 
 # ── API routes ─────────────────────────────────────────────────────────────────
 
+@app.get("/api/stream/cameras")
+def enumerate_cameras():
+    """Report available cameras.
+
+    Strategy: For the active camera, return info from the CameraStreamManager
+    (zero-cost). For other indices, use a quick default-backend probe (not
+    DSHOW) with a 2-second hard timeout per device to avoid hangs from
+    virtual/phantom cameras.
+    """
+    import concurrent.futures
+
+    # Check which camera index is currently in use
+    cm = get_camera()
+    active_idx: int | None = None
+    if cm and cm.is_running and cm.is_local_camera:
+        active_idx = cm.cam_source
+
+    def _probe_one(idx: int) -> dict | None:
+        # If this device is currently held by the live stream, report from cache
+        if idx == active_idx and cm is not None:
+            fid, _ts, frame = cm.get_latest_frame(block=False)
+            if frame is not None:
+                h, w = frame.shape[:2]
+            else:
+                w, h = 640, 480
+            label = "Laptop Camera" if idx == 0 else f"External Camera (USB-{idx})"
+            return {
+                "index": idx,
+                "label": f"{label} [ACTIVE]",
+                "resolution": f"{w}x{h}",
+                "width": w, "height": h, "active": True,
+            }
+        # On Windows, try DSHOW first (more reliable for USB cameras)
+        try:
+            if os.name == 'nt':
+                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(idx)
+            else:
+                cap = cv2.VideoCapture(idx)
+            if not cap.isOpened():
+                return None
+            ret, frame = cap.read()
+            cap.release()
+            if ret and frame is not None:
+                h, w = frame.shape[:2]
+                label = "Laptop Camera" if idx == 0 else f"External Camera (USB-{idx})"
+                return {
+                    "index": idx, "label": label,
+                    "resolution": f"{w}x{h}",
+                    "width": w, "height": h, "active": False,
+                }
+        except Exception:
+            pass
+        return None
+
+    cameras = []
+    # Probe indices 0-9 in parallel with 2s hard timeout per device
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as pool:
+        futs = {pool.submit(_probe_one, i): i for i in range(10)}
+        for fut in concurrent.futures.as_completed(futs, timeout=6):
+            try:
+                r = fut.result(timeout=2)
+                if r:
+                    cameras.append(r)
+            except Exception:
+                pass
+
+    cameras.sort(key=lambda c: c["index"])
+    return {"cameras": cameras}
+
+
 class StreamStartRequest(BaseModel):
     rtsp_url: str
 
 @app.post("/api/stream/start")
 def start_camera_stream(req: StreamStartRequest):
     try:
+        # Stop detection first so it doesn't read stale frames during switch
+        if bg_service and bg_service.is_running:
+            bg_service.stop()
         init_camera(req.rtsp_url)
         if bg_service:
             bg_service.start()
@@ -2736,36 +2811,31 @@ def get_camera_status():
 
 async def mjpeg_generator():
     last_fid = -1
-    
-    # Wait for camera to be ready
-    for _ in range(50): # 5 seconds
+    idle_seconds = 0.0
+    max_idle = 60.0  # give up after 60s with zero frames (across camera switches)
+
+    while True:
         cm = get_camera()
         if cm and cm.is_running:
             fid, ts, frame = cm.get_latest_frame(block=False)
             if frame is not None:
-                break
+                idle_seconds = 0.0
+                # Frame ID reset (0) means camera was reconnected — accept it
+                if fid != last_fid:
+                    last_fid = fid
+                    ret, jpeg = cv2.imencode('.jpg', frame)
+                    if ret:
+                        yield (b'--frame\r\n'
+                               b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+                    await asyncio.sleep(0.01)
+                    continue
+
+        # No frame yet — wait and retry (camera may be starting or switching)
         await asyncio.sleep(0.1)
-    
-    while True:
-        cm = get_camera()
-        if not cm or not cm.is_running:
+        idle_seconds += 0.1
+        if idle_seconds > max_idle:
+            logger.warning("MJPEG stream gave up after 60s idle")
             break
-            
-        # Get frame without blocking the main event loop too much
-        # We use a small timeout and check frequently
-        fid, ts, frame = cm.get_latest_frame(block=False)
-        
-        if frame is None or fid == last_fid:
-            await asyncio.sleep(0.03) # ~30 FPS check
-            continue
-            
-        last_fid = fid
-        ret, jpeg = cv2.imencode('.jpg', frame)
-        if not ret:
-            continue
-            
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
 
 @app.get("/api/stream/live")
 async def live_stream():

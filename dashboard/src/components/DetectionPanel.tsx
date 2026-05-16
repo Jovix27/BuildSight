@@ -1232,30 +1232,64 @@ export function LiveMode() {
   const [rtspUrl, setRtspUrl] = useState(() => {
     const saved = localStorage.getItem('bs_rtsp_url')
     if (saved) return saved
-    return settings.cctvStreamUrl || '0'
+    if (settings.cameraSource === 'external') return '1'
+    if (settings.cameraSource === 'cctv' && settings.cctvStreamUrl) return settings.cctvStreamUrl
+    return '0'
   })
+  const [showManualInput, setShowManualInput] = useState(false)
+  const [cameraList, setCameraList] = useState<{index:number;label:string;resolution:string}[]>([])
+  const [camerasLoading, setCamerasLoading] = useState(true)
+
+  // Fetch available cameras from backend on mount
+  useEffect(() => {
+    setCamerasLoading(true)
+    fetch('http://localhost:8000/api/stream/cameras')
+      .then(r => r.json())
+      .then(data => {
+        const cams: {index:number;label:string;resolution:string}[] = data.cameras || []
+        setCameraList(cams)
+        setCamerasLoading(false)
+
+        // Auto-select camera based on settings if not overridden by saved choice
+        const saved = localStorage.getItem('bs_rtsp_url')
+        if (!saved && cams.length > 0) {
+          if (settings.cameraSource === 'external') {
+            const external = cams.find(c => c.index > 0)
+            if (external) setRtspUrl(String(external.index))
+          } else if (settings.cameraSource === 'cctv' && settings.cctvStreamUrl) {
+            setRtspUrl(settings.cctvStreamUrl)
+          }
+        }
+      })
+      .catch(() => setCamerasLoading(false))
+  }, [])
 
   useEffect(() => {
     localStorage.setItem('bs_rtsp_url', rtspUrl)
   }, [rtspUrl])
 
-  // Auto-start camera on mount
+  // Auto-start camera once list is loaded
   useEffect(() => {
+    if (camerasLoading) return
     const timer = setTimeout(() => {
       startCamera()
-    }, 500)
+    }, 300)
     return () => {
       clearTimeout(timer)
       stopCamera()
     }
-  }, [])
+  }, [camerasLoading])
 
   // Sync with global settings if they change
   useEffect(() => {
-    if (settings.cctvStreamUrl && settings.cctvStreamUrl !== rtspUrl) {
+    if (settings.cameraSource === 'external') {
+      setRtspUrl('1')
+    } else if (settings.cameraSource === 'cctv' && settings.cctvStreamUrl) {
       setRtspUrl(settings.cctvStreamUrl)
+    } else if (settings.cameraSource === 'default') {
+      setRtspUrl('0')
     }
-  }, [settings.cctvStreamUrl])
+  }, [settings.cameraSource])
 
   const detections = store.detections
   const elapsed = store.latencyMs
@@ -1421,15 +1455,21 @@ export function LiveMode() {
   }, [showHeatmap])
 
   // ── Camera lifecycle ─────────────────────────────────────────────────────
-  const startCamera = async () => {
+  const startCamera = async (url?: string) => {
     setError(null)
+    const targetUrl = url ?? rtspUrl
     try {
       const res = await fetch(`${API}/stream/start`, { 
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ rtsp_url: rtspUrl })
+        body: JSON.stringify({ rtsp_url: targetUrl })
       })
-      if (!res.ok) throw new Error('Failed to start camera stream')
+      if (!res.ok) {
+        const errBody = await res.json().catch(() => ({}))
+        throw new Error(errBody.detail || `Camera start failed (HTTP ${res.status})`)
+      }
+
+      if (url) setRtspUrl(url)
       
       setActive(true)
       setRunning(true)
@@ -1470,7 +1510,7 @@ export function LiveMode() {
     setRunning(false)
   }, [setRunning])
 
-  useEffect(() => () => stopCamera(), [stopCamera])
+  useEffect(() => { void stopCamera() }, [stopCamera])
 
   return (
     <div className="det-live">
@@ -1534,23 +1574,78 @@ export function LiveMode() {
             <>
               <div className="det-rtsp-input-group" style={{ marginBottom: '1rem' }}>
                 <p className="section-label" style={{ marginBottom: '0.5rem' }}>CAMERA SOURCE</p>
-                <input 
-                  type="text" 
-                  className="det-input"
-                  style={{ width: '100%', padding: '0.5rem', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', color: 'var(--color-text)', fontSize: '0.85rem' }}
-                  value={rtspUrl}
-                  onChange={(e) => setRtspUrl(e.target.value)}
-                  placeholder="rtsp://ip:port/stream OR local index (0, 1)"
-                  disabled={active}
-                />
+
+                {/* ── Camera selector dropdown ── */}
+                {camerasLoading ? (
+                  <div style={{ padding: '0.5rem', fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>Detecting cameras...</div>
+                ) : cameraList.length > 0 ? (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.35rem' }}>
+                    {cameraList.map(cam => {
+                      const isSelected = rtspUrl === String(cam.index)
+                      const isActiveCam = isSelected && active
+                      return (
+                        <button
+                          key={cam.index}
+                          onClick={() => {
+                            setShowManualInput(false)
+                            if (active && !isSelected) {
+                              startCamera(String(cam.index))
+                            } else if (!active) {
+                              setRtspUrl(String(cam.index))
+                            }
+                          }}
+                          disabled={false}
+                          style={{
+                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                            padding: '0.55rem 0.7rem',
+                            background: isActiveCam ? 'rgba(59, 130, 246, 0.18)' : isSelected ? 'rgba(59, 130, 246, 0.08)' : 'var(--color-bg-elevated)',
+                            border: isActiveCam ? '1.5px solid var(--color-accent)' : isSelected ? '1px solid var(--color-accent)' : '1px solid var(--color-border)',
+                            borderRadius: '6px', color: 'var(--color-text)', cursor: 'pointer',
+                            fontSize: '0.8rem', fontFamily: 'var(--font-mono)', transition: 'all 0.15s',
+                          }}
+                        >
+                          <span style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                            <span style={{ color: isSelected ? 'var(--color-accent)' : 'var(--color-text-muted)' }}>●</span>
+                            {cam.label}
+                          </span>
+                          <span style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)' }}>{cam.resolution}</span>
+                        </button>
+                      )
+                    })}
+                  </div>
+                ) : null}
+
+                {/* Manual RTSP toggle */}
+                <button
+                  onClick={() => setShowManualInput(!showManualInput)}
+                  style={{
+                    marginTop: '0.4rem', background: 'none', border: 'none', color: 'var(--color-accent)',
+                    cursor: 'pointer', fontSize: '0.7rem', fontFamily: 'var(--font-mono)',
+                    padding: '0.25rem 0', textDecoration: 'underline',
+                  }}
+                >
+                  {showManualInput ? '▲ HIDE MANUAL INPUT' : '▼ ENTER RTSP URL MANUALLY — switch while live'}
+                </button>
+
+                {showManualInput && (
+                  <input
+                    type="text"
+                    className="det-input"
+                    style={{ width: '100%', padding: '0.5rem', marginTop: '0.3rem', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', color: 'var(--color-text)', fontSize: '0.85rem' }}
+                    value={rtspUrl}
+                    onChange={(e) => setRtspUrl(e.target.value)}
+                    placeholder="rtsp://ip:port/stream"
+                  />
+                )}
+
                 <p style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: '0.4rem' }}>
-                  Enter an RTSP URL or a local webcam index (e.g., 0 for laptop camera, 1 for USB webcam).
+                  {active ? 'Click another camera to switch live.' : 'Select a camera source above.'} Active source: <strong style={{ color: 'var(--color-text)' }}>{rtspUrl === '0' ? 'Laptop Camera' : rtspUrl === '1' ? 'External USB Camera' : rtspUrl}</strong>
                 </p>
               </div>
               <ConditionPicker value={condition} onChange={setCondition} />
               <button
                 className={`det-run-btn ${active ? 'det-run-btn--stop' : ''}`}
-                onClick={active ? stopCamera : startCamera}
+                onClick={active ? stopCamera : () => startCamera()}
                 style={{ width: '100%', marginTop: '1.25rem' }}
               >
                 {active ? 'STOP CAMERA' : 'START CAMERA'}
