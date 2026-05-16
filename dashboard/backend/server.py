@@ -72,6 +72,7 @@ except ImportError:
     shapely = None
 
 import report_generator
+from camera_stream import init_camera, get_camera
 
 # ── paths ──────────────────────────────────────────────────────────────────────
 ROOT = Path(__file__).parent.parent.parent   # BuildSight root
@@ -1000,6 +1001,12 @@ async def startup_bg_service():
     global bg_service
     ws_manager.capture_loop(asyncio.get_event_loop())
 
+    # Initialize camera if RTSP_URL is provided in env
+    rtsp_url = os.environ.get("RTSP_URL")
+    if rtsp_url:
+        logger.info(f"Starting camera stream on startup with URL: {rtsp_url}")
+        init_camera(rtsp_url)
+
     # Kick off Florence-2 loading in a background thread so it's ready before
     # the first /vlm/latest request without blocking startup.
     try:
@@ -1009,13 +1016,62 @@ async def startup_bg_service():
         logger.warning("[VLM] Could not start preload: %s", _vlm_err)
 
     from background_detection_service import BackgroundDetectionService
+    from buildsight_ensemble import EnsemblePipeline
+
+    ensemble_pipeline = EnsemblePipeline(
+        device=DEVICE,
+        use_half=USE_HALF,
+        model_v11=model_v11,
+        model_v26=model_v26
+    )
 
     def _classify_wrap(frame):
         return classify_scene_fast(frame, model_v11, DEVICE, USE_HALF)
 
+    def _ensemble_inference_wrap(frame, scene, conf_threshold):
+        """Bridge EnsemblePipeline output → BackgroundDetectionService format.
+        
+        BackgroundDetectionService expects:
+          - detections[i]['cls']  == 0  for worker filtering (line 237)
+          - detections[i]['box']  == [x1, y1, x2, y2]
+          
+        Frontend (DetectionPanel.tsx) expects via WebSocket:
+          - detections[i]['class']      == 'worker' | 'helmet' | 'safety_vest'
+          - detections[i]['confidence'] == float 0..1
+          - detections[i]['box']        == [x1, y1, x2, y2]
+          - detections[i]['has_helmet'] == bool  (worker only)
+          - detections[i]['has_vest']   == bool  (worker only)
+        """
+        result = ensemble_pipeline.run(frame, condition=scene)
+        
+        adapted_detections = []
+        for d in result["detections"]:
+            # Map class name → numeric cls for BackgroundDetectionService worker filter
+            cls_name = d["class"]       # "worker" | "helmet" | "safety_vest"
+            cls_id = 0 if cls_name == "worker" else (1 if cls_name == "helmet" else 2)
+            
+            adapted = {
+                # BackgroundDetectionService uses 'cls' for worker filtering
+                "cls": cls_id,
+                # Frontend uses 'class' and 'confidence' for rendering
+                "class": cls_name,
+                "confidence": d["confidence"],
+                "score": d["confidence"],   # BGService also reads 'score'
+                "box": d["box"],
+            }
+            if "track_id" in d:
+                adapted["track_id"] = d["track_id"]
+            if cls_name == "worker":
+                adapted["has_helmet"] = d.get("has_helmet", False)
+                adapted["has_vest"] = d.get("has_vest", False)
+                
+            adapted_detections.append(adapted)
+            
+        return adapted_detections, None, {"elapsed_ms": result["elapsed_ms"]}
+
     bg_service = BackgroundDetectionService(
         broadcast_fn=ws_manager.broadcast_from_thread,
-        inference_fn=run_inference,
+        inference_fn=_ensemble_inference_wrap,
         classify_fn=_classify_wrap,
     )
     logger.info("[BG] Background detection service initialised")
@@ -2642,6 +2698,78 @@ async def get_worker_positions():
 
 
 # ── API routes ─────────────────────────────────────────────────────────────────
+
+class StreamStartRequest(BaseModel):
+    rtsp_url: str
+
+@app.post("/api/stream/start")
+def start_camera_stream(req: StreamStartRequest):
+    try:
+        init_camera(req.rtsp_url)
+        if bg_service:
+            bg_service.start()
+        logger.info(f"Started camera stream and detection service for {req.rtsp_url}")
+        return {"status": "ok", "message": f"Started camera stream and detection for {req.rtsp_url}"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/stream/stop")
+def stop_camera_stream():
+    try:
+        from camera_stream import get_camera
+        cm = get_camera()
+        if cm:
+            cm.stop()
+        if bg_service:
+            bg_service.stop()
+        logger.info("Stopped camera stream and detection service")
+        return {"status": "ok", "message": "Stopped camera stream and detection"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/stream/status")
+def get_camera_status():
+    cm = get_camera()
+    if not cm:
+        return {"is_running": False}
+    return cm.get_health_metrics()
+
+async def mjpeg_generator():
+    last_fid = -1
+    
+    # Wait for camera to be ready
+    for _ in range(50): # 5 seconds
+        cm = get_camera()
+        if cm and cm.is_running:
+            fid, ts, frame = cm.get_latest_frame(block=False)
+            if frame is not None:
+                break
+        await asyncio.sleep(0.1)
+    
+    while True:
+        cm = get_camera()
+        if not cm or not cm.is_running:
+            break
+            
+        # Get frame without blocking the main event loop too much
+        # We use a small timeout and check frequently
+        fid, ts, frame = cm.get_latest_frame(block=False)
+        
+        if frame is None or fid == last_fid:
+            await asyncio.sleep(0.03) # ~30 FPS check
+            continue
+            
+        last_fid = fid
+        ret, jpeg = cv2.imencode('.jpg', frame)
+        if not ret:
+            continue
+            
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + jpeg.tobytes() + b'\r\n')
+
+@app.get("/api/stream/live")
+async def live_stream():
+    return StreamingResponse(mjpeg_generator(), media_type="multipart/x-mixed-replace; boundary=frame")
 
 @app.get("/api/health")
 def health():

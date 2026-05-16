@@ -415,3 +415,78 @@
   font-size: 0.72rem;
   color: var(--color-text-muted);
 }
+
+/* Live Mode HUD */
+.live-feed__hud {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  background: rgba(0, 0, 0, 0.4);
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  color: var(--color-text-muted);
+}
+
+.hud-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-text-strong);
+}
+
+.hud-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #444;
+}
+
+.hud-dot--active {
+  background: var(--color-safe);
+  box-shadow: 0 0 8px var(--color-safe);
+  animation: det-pulse 2s infinite;
+}
+
+.hud-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+.hud-sep {
+  opacity: 0.3;
+}
+
+.hud-settings {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.hud-btn {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  padding: 2px 8px;
+  border-radius: 2px;
+  font-size: 0.65rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.hud-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--color-text-strong);
+  border-color: var(--color-accent);
+}
+
+.det-error-banner {
+  background: rgba(255, 68, 68, 0.1);
+  border-bottom: 1px solid rgba(255, 68, 68, 0.3);
+  color: #ff6666;
+  padding: 0.5rem 1rem;
+  font-size: 0.75rem;
+  font-family: var(--font-mono);
+}

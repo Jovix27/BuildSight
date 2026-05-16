@@ -82,6 +82,9 @@ interface DetectionState {
   // Raw frame detections (for DetectionSidebar display)
   detections:      any[]
   ppeWorkers:      any[]
+  // Inference frame dimensions (from backend broadcast)
+  frameWidth:      number
+  frameHeight:     number
   condition:       string
 
   // Actions
@@ -136,6 +139,8 @@ export const useDetectionStore = create<DetectionState>((set, get) => ({
   roiPoly:         null,
   detections:      [],
   ppeWorkers:      [],
+  frameWidth:      640,
+  frameHeight:     480,
   condition:       'S1_normal',
 
   connect: () => {
@@ -183,6 +188,9 @@ export const useDetectionStore = create<DetectionState>((set, get) => ({
           workerPositions: data.worker_positions  ?? [],
           zoneOccupancy:   data.zone_occupancy    ?? {},
           violations:      data.violations        ?? [],
+          detections:      data.detections        ?? [],
+          frameWidth:      data.frame_width       ?? get().frameWidth,
+          frameHeight:     data.frame_height      ?? get().frameHeight,
           frameCount:      get().frameCount + 1,
         })
       } else if (type === 'detection_state_snapshot') {

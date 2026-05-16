@@ -136,7 +136,7 @@ function mergeTracks(tracks: Track[], newDets: Detection[]): Track[] {
   for (const t of tracks) {
     let bestIou = 0.25, bestIdx = -1
     for (let i = 0; i < newDets.length; i++) {
-      if (newDets[i].class !== t.cls) continue
+      if (newDets[i].class !== t.cls || !newDets[i].box) continue
       const iou = _boxIou(t.frameBox as number[], newDets[i].box as number[])
       if (iou > bestIou) { bestIou = iou; bestIdx = i }
     }
@@ -156,7 +156,7 @@ function mergeTracks(tracks: Track[], newDets: Detection[]): Track[] {
 
   const alive = tracks.filter(t => t.missed <= 2)
   newDets.forEach((d, i) => {
-    if (matched.has(i)) return
+    if (matched.has(i) || !d.box) return
     alive.push({
       id: _nextTrackId++, cls: d.class, confidence: d.confidence,
       frameBox: d.box,
@@ -494,6 +494,7 @@ function ImageOverlay({ imageB64, detections }: { imageB64: string, detections: 
       ctx.clearRect(0, 0, canvas.width, canvas.height)
 
       for (const det of detections) {
+        if (!det.box) continue
         const [x1, y1, x2, y2] = det.box
         const isWorkerBox = det.class === 'worker' || det.class === 'person'
 
@@ -1216,72 +1217,102 @@ const fh = Math.max(1, Math.round(vh * inferScale))
 //             lerp → draw on transparent canvas overlay  (no image round-trip)
 //
 export function LiveMode() {
-  const { pushDetections, setRunning } = useDetectionStats()
+  const { setRunning } = useDetectionStats()
   const pipeline = useDetectionPipeline()
   const store = useDetectionStore()
   const { settings } = useSettings()
-  void pipeline; void settings  // used indirectly via configRef / inference form
+  void pipeline; void settings
 
   const [active, setActive] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [inferError, setInferError] = useState<string | null>(null)
-  const inferErrorCountRef = useRef(0)
-  const INFER_ERROR_THRESHOLD = 3
   const [showHeatmap, setShowHeatmap] = useState(false)
   const heatmapHistoryRef = useRef<HeatmapPoint[]>([])
 
   const [condition, setCondition] = useState<Condition>('S1_normal')
+  const [rtspUrl, setRtspUrl] = useState(() => {
+    const saved = localStorage.getItem('bs_rtsp_url')
+    if (saved) return saved
+    return settings.cctvStreamUrl || '0'
+  })
+
+  useEffect(() => {
+    localStorage.setItem('bs_rtsp_url', rtspUrl)
+  }, [rtspUrl])
+
+  // Auto-start camera on mount
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      startCamera()
+    }, 500)
+    return () => {
+      clearTimeout(timer)
+      stopCamera()
+    }
+  }, [])
+
+  // Sync with global settings if they change
+  useEffect(() => {
+    if (settings.cctvStreamUrl && settings.cctvStreamUrl !== rtspUrl) {
+      setRtspUrl(settings.cctvStreamUrl)
+    }
+  }, [settings.cctvStreamUrl])
+
   const detections = store.detections
   const elapsed = store.latencyMs
 
-  const videoRef = useRef<HTMLVideoElement>(null)
+  const imgRef = useRef<HTMLImageElement>(null)
   const overlayRef = useRef<HTMLCanvasElement>(null)
-  const captureRef = useRef<HTMLCanvasElement>(null)  // offscreen, not in DOM
 
   const rafRef = useRef<number | null>(null)
   const isRunningRef = useRef(false)
-  const configRef = useRef({ condition })
   const tracksRef = useRef<Track[]>([])
   const pendingRef = useRef<Detection[] | null>(null)
-  const pendingHeatmapRef = useRef<DetectionHeatmapPayload | null>(null)
   const riskZonesRef = useRef<DetectionRiskZone[]>([])
   const frameWRef = useRef(1)
   const frameHRef = useRef(1)
 
   useEffect(() => {
-    configRef.current = { condition }
-  }, [condition])
+    if (active && detections && detections.length > 0) {
+      pendingRef.current = detections
+      const nextMoment = buildPeakRiskMoment(detections, 0)
+      if (nextMoment) {
+        useDetectionStore.setState(state => ({
+          peakRiskMoments: mergePeakRiskMoments(state.peakRiskMoments, nextMoment, 6, 1)
+        }))
+      }
+    }
+  }, [detections, active])
 
-  // ── RAF draw loop (identical logic to VideoUploadMode) ───────────────────
+  // ── RAF draw loop — unified with VideoUploadMode color scheme ─────────────
   const drawOverlay = useCallback(() => {
     const canvas = overlayRef.current
-    const video = videoRef.current
-    if (!canvas || !video) return
+    const img = imgRef.current
+    if (!canvas || !img) return
 
-    // CRITICAL: Ensure canvas dimensions match video display size
-    // This fixes bounding boxes not appearing due to dimension mismatches
-    const dw = video.clientWidth || video.offsetWidth || 640
-    const dh = video.clientHeight || video.offsetHeight || 360
+    const dw = img.clientWidth || img.offsetWidth || 640
+    const dh = img.clientHeight || img.offsetHeight || 360
     
     if (canvas.width !== dw || canvas.height !== dh) {
       canvas.width = dw
       canvas.height = dh
-      // Re-initialize tracks on resize
       tracksRef.current.forEach(t => { t.initialized = false })
     }
 
     const ctx = canvas.getContext('2d')!
     ctx.clearRect(0, 0, dw, dh)
 
-    // Skip if video not ready
-    if (!video.videoWidth || !video.videoHeight || isNaN(video.videoWidth)) {
+    if (!img.naturalWidth || !img.naturalHeight || isNaN(img.naturalWidth)) {
       rafRef.current = requestAnimationFrame(drawOverlay)
       return
     }
 
-    const { rw, rh, ox, oy } = _letterbox(video.videoWidth, video.videoHeight, dw, dh)
-    const fw = frameWRef.current
-    const fh = frameHRef.current
+    const { rw, rh, ox, oy } = _letterbox(img.naturalWidth, img.naturalHeight, dw, dh)
+
+    // Use backend-reported inference dimensions for coordinate mapping
+    // Falls back to img.naturalWidth if not yet received
+    const st = useDetectionStore.getState()
+    const fw = frameWRef.current = st.frameWidth || img.naturalWidth
+    const fh = frameHRef.current = st.frameHeight || img.naturalHeight
 
     if (showHeatmap && heatmapHistoryRef.current.length > 0) {
       heatmapHistoryRef.current = drawHeatmap(
@@ -1303,34 +1334,25 @@ export function LiveMode() {
       const dets = pendingRef.current
       tracksRef.current = mergeTracks(tracksRef.current, dets)
 
-      const backendHeatmap = pendingHeatmapRef.current
-      riskZonesRef.current = backendHeatmap?.zones ?? []
-
-      // Add backend risk points to heatmap history. Fall back to local worker
-      // centroids for older backend responses.
       const now = performance.now()
-      const backendPoints = pointsFromHeatmap(backendHeatmap ?? undefined, now)
-      if (backendPoints.length > 0) {
-        heatmapHistoryRef.current.push(...backendPoints)
-      } else {
-        dets.forEach(d => {
-          const isWorker = d.class === 'worker' || d.class === 'person'
-          const hasViolation = isWorker && (!d.has_helmet || !d.has_vest)
-          heatmapHistoryRef.current.push({
-            x: (d.box[0] + d.box[2]) / 2 / fw,
-            y: (d.box[1] + d.box[3]) / 2 / fh,
-            time: now,
-            type: hasViolation ? 'violation' : 'worker',
-            value: hasViolation ? 0.78 : 0.28,
-            riskLevel: hasViolation ? 'HIGH' : 'LOW',
-          })
+      dets.forEach(d => {
+        if (!d.box) return
+        const isWorker = d.class === 'worker' || d.class === 'person'
+        const hasViolation = isWorker && (!d.has_helmet || !d.has_vest)
+        heatmapHistoryRef.current.push({
+          x: (d.box[0] + d.box[2]) / 2 / fw,
+          y: (d.box[1] + d.box[3]) / 2 / fh,
+          time: now,
+          type: hasViolation ? 'violation' : 'worker',
+          value: hasViolation ? 0.78 : 0.28,
+          riskLevel: hasViolation ? 'HIGH' : 'LOW',
         })
-      }
+      })
 
       pendingRef.current = null
-      pendingHeatmapRef.current = null
     }
-    const LERP = 0.60  // faster snap to new position reduces perceived lag
+
+    const LERP = 0.60
 
     for (const t of tracksRef.current) {
       const [x1, y1, x2, y2] = t.frameBox
@@ -1349,146 +1371,99 @@ export function LiveMode() {
 
       ctx.globalAlpha = t.missed > 0 ? 0.45 : 1.0
 
-      // ── Compliance colour coding (synced with VideoUploadMode) ──────────
-      const col = resolveCssVar(CLASS_COLORS[t.cls] ?? '#aaaaaa')
+      // ── Unified color scheme (matches VideoUploadMode exactly) ──────
       const isWorkerBoxLive = t.cls === 'worker' || t.cls === 'person'
-      let borderColLive = col
+      let borderColLive: string
 
       if (isWorkerBoxLive) {
         if (t.has_helmet === true && t.has_vest === true) {
-          borderColLive = '#0088ff' // Brand Blue: Full Compliance
-        } else if (t.has_helmet === false || t.has_vest === false) {
-          borderColLive = '#ffaa00' // Amber: PPE violation (no red on canvas)
+          borderColLive = '#00c864'   // green – fully compliant
+        } else if (t.has_helmet === false && t.has_vest === false) {
+          borderColLive = '#ff2a2a'   // red – full violation
+        } else {
+          borderColLive = '#ffaa00'   // orange – partial violation
         }
+      } else if (t.cls === 'helmet' || t.cls === 'hardhat') {
+        borderColLive = '#ffd600'     // yellow – helmet
+      } else if (t.cls === 'safety_vest' || t.cls === 'vest' || t.cls === 'safety-vest') {
+        borderColLive = '#00bfff'     // cyan – vest
+      } else {
+        borderColLive = '#aaaaaa'
       }
 
+      // Draw the box
       ctx.strokeStyle = borderColLive
       ctx.lineWidth = isWorkerBoxLive ? 3 : 2.5
       ctx.strokeRect(t.sx1, t.sy1, t.sx2 - t.sx1, t.sy2 - t.sy1)
 
-      // Clean label — class name + confidence only. PPE status is in PPEStatusPanel.
-      const label = `${t.cls} ${(t.confidence * 100).toFixed(0)}%`
-      ctx.font = 'bold 11px monospace'
+      // ── Label format (matches VideoUploadMode exactly) ──────────────
+      const conf = Math.round((t.confidence ?? 0) * 100)
+      let label: string
+      if (isWorkerBoxLive) {
+        const helmBadge = t.has_helmet === false ? ' ⚠H' : ''
+        const vestBadge = t.has_vest === false ? ' ⚠V' : ''
+        label = `W ${conf}%${helmBadge}${vestBadge}`
+      } else {
+        label = `${t.cls} ${conf}%`
+      }
+
+      ctx.font = 'bold 14px monospace'
       const tw = ctx.measureText(label).width
       ctx.fillStyle = borderColLive
-      ctx.fillRect(t.sx1, t.sy1 - 17, tw + 8, 17)
-      ctx.fillStyle = '#000'
-      ctx.fillText(label, t.sx1 + 4, t.sy1 - 3)
+      ctx.fillRect(t.sx1, Math.max(0, t.sy1 - 20), tw + 10, 20)
+      ctx.fillStyle = isWorkerBoxLive ? '#000' : '#fff'
+      ctx.fillText(label, t.sx1 + 5, Math.max(14, t.sy1 - 4))
 
       ctx.globalAlpha = 1
     }
 
     rafRef.current = requestAnimationFrame(drawOverlay)
-  }, [])
-
-  // ── Inference loop — same self-scheduling pattern as VideoUploadMode ─────
-  const startInferenceLoop = useCallback(() => {
-    const MIN_GAP_MS = 100  // was 450 — let GPU run at full speed
-
-    const loop = async () => {
-      if (!isRunningRef.current) return
-
-      const video = videoRef.current
-      const capture = captureRef.current
-      if (!video || !capture || video.readyState < 2) {
-        if (isRunningRef.current) setTimeout(loop, 100)
-        return
-      }
-
-      const MAX_DIM = 640
-      const vw = video.videoWidth, vh = video.videoHeight
-      const scale = Math.min(1, MAX_DIM / Math.max(vw, vh, 1))
-      const fw = Math.round(vw * scale), fh = Math.round(vh * scale)
-      capture.width = fw; capture.height = fh
-      capture.getContext('2d')!.drawImage(video, 0, 0, fw, fh)
-      frameWRef.current = fw; frameHRef.current = fh
-
-      const b64 = capture.toDataURL('image/jpeg', 0.72)
-      const t0 = performance.now()
-      const cfg = configRef.current
-
-      try {
-        const form = new FormData()
-        form.append('image_b64', b64)
-        form.append('condition', cfg.condition)
-        const res = await fetch(`${API}/detect/frame`, { method: 'POST', body: form })
-        if (res.ok && isRunningRef.current) {
-          const data = await res.json()
-          const frameElapsed = Math.round(performance.now() - t0)
-          inferErrorCountRef.current = 0
-          setInferError(null)
-          pendingRef.current = data.detections
-          pendingHeatmapRef.current = data.heatmap ?? null
-          pushDetections(data.detections, frameElapsed, [], [], 0, data.condition)
-          
-          // Sync to Global Store
-          useDetectionStore.setState({
-            detections: data.detections,
-            workerCount: data.detections.length,
-            latencyMs: frameElapsed,
-            sceneCondition: data.condition || store.sceneCondition,
-            fps: Math.round(1000 / Math.max(16, frameElapsed))
-          })
-
-          // Peak Risk Moments logic for LiveMode
-          const nextMoment = buildPeakRiskMoment(data.detections, 0)
-          if (nextMoment) {
-            store.setPeakRiskMoments(
-              mergePeakRiskMoments(store.peakRiskMoments, nextMoment, 6, 1),
-            )
-          }
-        } else if (!res.ok) {
-          inferErrorCountRef.current += 1
-          if (inferErrorCountRef.current >= INFER_ERROR_THRESHOLD)
-            setInferError(`Backend error ${res.status}`)
-        }
-      } catch (e) {
-        inferErrorCountRef.current += 1
-        if (inferErrorCountRef.current >= INFER_ERROR_THRESHOLD)
-          setInferError(e instanceof Error ? e.message : 'Backend unreachable')
-      }
-
-      const gap = Math.max(0, MIN_GAP_MS - (performance.now() - t0))
-      if (isRunningRef.current) setTimeout(loop, gap)
-    }
-
-    loop()
-  }, [pushDetections])
+  }, [showHeatmap])
 
   // ── Camera lifecycle ─────────────────────────────────────────────────────
   const startCamera = async () => {
     setError(null)
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { width: { ideal: 1280 }, height: { ideal: 720 } },
+      const res = await fetch(`${API}/stream/start`, { 
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rtsp_url: rtspUrl })
       })
-      const video = videoRef.current
-      if (!video) return
-      video.srcObject = stream
-      await video.play()
+      if (!res.ok) throw new Error('Failed to start camera stream')
+      
       setActive(true)
       setRunning(true)
       isRunningRef.current = true
+      
+      if (imgRef.current) {
+        imgRef.current.src = `${API}/stream/live?t=${Date.now()}`
+      }
+      
+      store.requestSnapshot()
       rafRef.current = requestAnimationFrame(drawOverlay)
-      startInferenceLoop()
-    } catch {
-      setError('Camera access denied or unavailable.')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Camera stream unreachable.')
     }
   }
 
-  const stopCamera = useCallback(() => {
+  const stopCamera = useCallback(async () => {
     isRunningRef.current = false
+    try {
+      await fetch(`${API}/stream/stop`, { method: 'POST' })
+    } catch (e) {
+      console.error("Failed to stop camera on backend:", e)
+    }
+
     if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null }
     tracksRef.current = []
     pendingRef.current = null
-    pendingHeatmapRef.current = null
     riskZonesRef.current = []
     heatmapHistoryRef.current = []
-    const video = videoRef.current
-    if (video?.srcObject) {
-      (video.srcObject as MediaStream).getTracks().forEach(t => t.stop())
-      video.srcObject = null
+    
+    if (imgRef.current) {
+      imgRef.current.src = ''
     }
+    
     const canvas = overlayRef.current
     canvas?.getContext('2d')?.clearRect(0, 0, canvas.width, canvas.height)
     setActive(false)
@@ -1499,34 +1474,35 @@ export function LiveMode() {
 
   return (
     <div className="det-live">
-      {error && <p className="det-error">{error}</p>}
+      {error && <div className="det-error-banner">{error}</div>}
 
-      {/* Status bar */}
-      <div className="det-video__status">
-        <span className={`det-video__indicator ${active && !inferError ? 'det-video__indicator--live' : ''}`} />
-        {inferError
-          ? <span style={{ color: 'var(--color-danger, #ff4444)', fontWeight: 700 }}>⚠ {inferError}</span>
-          : <span>{active ? 'LIVE DETECTION' : 'CAMERA OFF'}</span>
-        }
-        {active && elapsed > 0 && (
-          <>
-            <span className="det-video__status-sep" />
-            <span>{elapsed}ms / inference</span>
-            <span className="det-video__status-sep" />
-            <span>{detections.length} detection{detections.length !== 1 ? 's' : ''}</span>
-          </>
-        )}
+      <div className="live-feed__hud">
+        <div className="hud-status">
+          <span className={`hud-dot ${active ? 'hud-dot--active' : ''}`} />
+          <span>{active ? 'LIVE STREAMING' : 'OFFLINE'}</span>
+        </div>
+        <div className="hud-meta">
+          <span>SOURCE: {rtspUrl === '0' ? 'INTERNAL WEBCAM' : rtspUrl === '1' ? 'EXTERNAL USB CAMERA' : 'RTSP STREAM'}</span>
+          <span className="hud-sep">/</span>
+          <span>MODEL: BS-ENSEMBLE-WBF</span>
+        </div>
+        <div className="hud-settings">
+          <button className="hud-btn" onClick={() => setShowHeatmap(!showHeatmap)}>
+            {showHeatmap ? 'HEATMAP ON' : 'HEATMAP OFF'}
+          </button>
+        </div>
       </div>
 
       {/* Feed + sidebar */}
       <div className="det-video__layout">
         <div className="det-video__col">
           <div className="det-video__player-wrap" style={{ cursor: 'default' }}>
-            <video
-              ref={videoRef}
+            <img
+              ref={imgRef}
               className="det-video__player"
-              muted
-              playsInline
+              style={{ display: active ? 'block' : 'none', width: '100%', height: '100%', objectFit: 'contain' }}
+              alt="Live Camera Feed"
+              crossOrigin="anonymous"
             />
             <canvas ref={overlayRef} className="det-video__overlay" />
             {!active && (
@@ -1556,6 +1532,21 @@ export function LiveMode() {
           mode={active ? 'live-ensemble' : undefined}
           renderControls={
             <>
+              <div className="det-rtsp-input-group" style={{ marginBottom: '1rem' }}>
+                <p className="section-label" style={{ marginBottom: '0.5rem' }}>CAMERA SOURCE</p>
+                <input 
+                  type="text" 
+                  className="det-input"
+                  style={{ width: '100%', padding: '0.5rem', background: 'var(--color-bg-elevated)', border: '1px solid var(--color-border)', color: 'var(--color-text)', fontSize: '0.85rem' }}
+                  value={rtspUrl}
+                  onChange={(e) => setRtspUrl(e.target.value)}
+                  placeholder="rtsp://ip:port/stream OR local index (0, 1)"
+                  disabled={active}
+                />
+                <p style={{ fontSize: '0.7rem', color: 'var(--color-text-muted)', marginTop: '0.4rem' }}>
+                  Enter an RTSP URL or a local webcam index (e.g., 0 for laptop camera, 1 for USB webcam).
+                </p>
+              </div>
               <ConditionPicker value={condition} onChange={setCondition} />
               <button
                 className={`det-run-btn ${active ? 'det-run-btn--stop' : ''}`}
@@ -1592,9 +1583,6 @@ export function LiveMode() {
           </div>
         </div>
       </div>
-
-      {/* Hidden offscreen capture canvas */}
-      <canvas ref={captureRef} style={{ display: 'none' }} />
     </div>
   )
 }

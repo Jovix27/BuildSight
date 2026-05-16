@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 
 from coordinate_projector import PixelToWorldProjector
+from camera_stream import get_camera
 
 logger = logging.getLogger("buildsight.bg_detection")
 
@@ -64,6 +65,7 @@ class BackgroundDetectionService:
         self.worker_positions: list = []
         self.zone_occupancy  : dict = {}
         self.active_violations: list = []
+        self.detections      : list = []
 
         self._lock = threading.Lock()
         self._projector = PixelToWorldProjector()
@@ -95,8 +97,8 @@ class BackgroundDetectionService:
         if self.is_running:
             logger.warning("[BG] Already running — ignoring start()")
             return
-        if not self._cap:
-            raise RuntimeError("Call load_video() before start()")
+        if not self._cap and not (get_camera() and get_camera().is_running):
+            raise RuntimeError("Call load_video() or init_camera() before start()")
 
         self._stop_event.clear()
         self.is_running = True
@@ -147,6 +149,7 @@ class BackgroundDetectionService:
                 "worker_positions": self.worker_positions,
                 "zone_occupancy":   self.zone_occupancy,
                 "violations":       self.active_violations,
+                "detections":       self.detections,
             }
 
     # ── Internal loop ─────────────────────────────────────────────────────────
@@ -172,17 +175,33 @@ class BackgroundDetectionService:
                 time.sleep(0.05)
                 continue
 
-            ret, frame = self._cap.read()
-            if not ret:
-                # Loop video
-                self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                self.current_frame = 0
-                self._broadcast({"type": "video_looped"})
-                continue
+            cm = get_camera()
+            if cm and cm.is_running:
+                # Get frame from live stream, block up to 1 second
+                fid, ts, frame = cm.get_latest_frame(block=True, timeout=1.0)
+                if frame is None:
+                    continue
+                # For live stream, use the frame_id from the camera manager
+                with self._lock:
+                    self.current_frame = fid
+                    self.frame_count += 1
+            else:
+                # Fallback to video file
+                if self._cap is None:
+                    time.sleep(1)
+                    continue
+                ret, frame = self._cap.read()
+                if not ret:
+                    # Loop video
+                    self._cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                    self.current_frame = 0
+                    self._broadcast({"type": "video_looped"})
+                    continue
+                with self._lock:
+                    self.current_frame += 1
+                    self.frame_count += 1
 
-            with self._lock:
-                self.current_frame += 1
-                self.frame_count   += 1
+
 
             # ── Frame skipping — reduces GPU pressure on heavy scenes ─────
             _frame_skip_counter += 1
@@ -206,6 +225,9 @@ class BackgroundDetectionService:
                     scale = 640 / max(h, w)
                     frame = cv2.resize(frame, (int(w * scale), int(h * scale)),
                                       interpolation=cv2.INTER_LINEAR)
+                
+                # Track inference dimensions for frontend coordinate mapping
+                infer_h, infer_w = frame.shape[:2]
 
                 # ── Inference ─────────────────────────────────────────────
                 detections, _, _perf = self._inference(frame, scene, conf_threshold)
@@ -227,7 +249,7 @@ class BackgroundDetectionService:
 
                     worker_positions.append({
                         "worker_id":    w.get("track_id", f"W{i+1}"),
-                        "confidence":   round(w.get("score", 0), 3),
+                        "confidence":   round(w.get("score", w.get("confidence", 0)), 3),
                         "lat":          pos["lat"],
                         "lng":          pos["lng"],
                         "utm_e":        pos["utm_e"],
@@ -262,6 +284,7 @@ class BackgroundDetectionService:
                     self.worker_positions    = worker_positions
                     self.zone_occupancy      = zone_occupancy
                     self.active_violations   = violations
+                    self.detections          = detections
 
                 # ── Throttled broadcast ───────────────────────────────────
                 now = time.time()
@@ -277,6 +300,9 @@ class BackgroundDetectionService:
                         "worker_positions": worker_positions,
                         "zone_occupancy":   zone_occupancy,
                         "violations":       violations,
+                        "detections":       detections,
+                        "frame_width":      infer_w,
+                        "frame_height":     infer_h,
                         "timestamp":        now,
                     })
                     last_emit = now

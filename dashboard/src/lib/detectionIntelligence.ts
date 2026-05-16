@@ -61,7 +61,7 @@ export function detectionsToHeatmapPoints(
   if (!frameWidth || !frameHeight) return []
 
   return detections.flatMap((detection) => {
-    if (!isWorkerDetection(detection)) return []
+    if (!isWorkerDetection(detection) || !detection.box) return []
 
     const [x1, y1, x2, y2] = detection.box
     const point: HeatmapPoint = {
@@ -84,10 +84,12 @@ export function buildPeakRiskMoment(
   const violations = detections.filter(isViolationDetection)
   if (violations.length === 0) return null
 
-  const centers = violations.map(({ box }) => ({
-    x: (box[0] + box[2]) / 2,
-    y: (box[1] + box[3]) / 2,
-  }))
+  const centers = violations
+    .filter(v => !!v.box)
+    .map(({ box }) => ({
+      x: (box[0] + box[2]) / 2,
+      y: (box[1] + box[3]) / 2,
+    }))
   const avgDistance = averagePairDistance(centers)
   const densityBoost = violations.length > 1 ? Math.max(0, 1.5 - avgDistance / 180) : 0
 

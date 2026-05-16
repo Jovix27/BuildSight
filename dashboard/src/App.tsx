@@ -23,9 +23,8 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 import { AnimatePresence } from 'framer-motion'
 import './App.css'
 import { AlertLog, type AlertItem } from './components/AlertLog'
-import { LiveFeed } from './components/LiveFeed'
 import { MetricCard } from './components/MetricCard'
-import { DetectionPanel } from './components/DetectionPanel'
+import { DetectionPanel, LiveMode } from './components/DetectionPanel'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SettingsProvider, useSettings } from './SettingsContext'
 import { DetectionStatsProvider, useDetectionStats } from './DetectionStatsContext'
@@ -484,10 +483,10 @@ function AppInner() {
                 </div>
                 <div className="video-viewport">
                   {dashboardMode === 'LIVE' ? (
-                    <LiveFeed confidenceThreshold={settings.confidenceThreshold} />
-                  ) : (
-                    <DetectionPanel mode={dashboardMode} />
-                  )}
+                  <LiveMode />
+                ) : (
+                  <DetectionPanel mode={dashboardMode} />
+                )}
                 </div>
               </div>
 

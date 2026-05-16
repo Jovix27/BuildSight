@@ -636,6 +636,8 @@ class EnsemblePipeline:
         device:   str  = "auto",
         use_half: bool = True,
         condition: str = "auto",
+        model_v11=None,
+        model_v26=None,
     ) -> None:
         from ultralytics import YOLO
         import torch
@@ -647,17 +649,23 @@ class EnsemblePipeline:
         self.use_half  = use_half and device.startswith("cuda")
         self.condition = condition
 
-        print(f"[EnsemblePipeline] Loading YOLOv11 from {MODEL_V11_PATH} ...")
-        self.model_v11 = YOLO(str(MODEL_V11_PATH))
+        if model_v11 is not None:
+            self.model_v11 = model_v11
+        else:
+            print(f"[EnsemblePipeline] Loading YOLOv11 from {MODEL_V11_PATH} ...")
+            self.model_v11 = YOLO(str(MODEL_V11_PATH))
 
-        print(f"[EnsemblePipeline] Loading YOLOv26 from {MODEL_V26_PATH} ...")
-        self.model_v26 = YOLO(str(MODEL_V26_PATH))
+        if model_v26 is not None:
+            self.model_v26 = model_v26
+        else:
+            print(f"[EnsemblePipeline] Loading YOLOv26 from {MODEL_V26_PATH} ...")
+            self.model_v26 = YOLO(str(MODEL_V26_PATH))
 
         self.temporal  = TemporalPPEFilter(max_misses=6)
         self._frame_idx = 0
 
         # Warm-up pass to avoid first-frame latency spike
-        if device.startswith("cuda"):
+        if device.startswith("cuda") and model_v11 is None:
             dummy = np.zeros((640, 640, 3), dtype=np.uint8)
             for m in (self.model_v11, self.model_v26):
                 m.predict(dummy, device=device, verbose=False, conf=PRE_CONF,
@@ -744,6 +752,8 @@ class EnsemblePipeline:
                 "confidence": round(d["score"], 4),
                 "box":        [round(v, 1) for v in d["box"]],
             }
+            if "track_id" in d:
+                det["track_id"] = d["track_id"]
             if d["cls"] == CLS_WORKER:
                 det["has_helmet"] = d.get("has_helmet", False)
                 det["has_vest"]   = d.get("has_vest",   False)
