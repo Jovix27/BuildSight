@@ -1239,6 +1239,7 @@ export function LiveMode() {
   const [showManualInput, setShowManualInput] = useState(false)
   const [cameraList, setCameraList] = useState<{index:number;label:string;resolution:string}[]>([])
   const [camerasLoading, setCamerasLoading] = useState(true)
+  const [isSwitching, setIsSwitching] = useState(false)
 
   // Fetch available cameras from backend on mount
   useEffect(() => {
@@ -1458,6 +1459,7 @@ export function LiveMode() {
   const startCamera = async (url?: string) => {
     setError(null)
     const targetUrl = url ?? rtspUrl
+    setIsSwitching(true)
     try {
       const res = await fetch(`${API}/stream/start`, { 
         method: 'POST',
@@ -1482,9 +1484,35 @@ export function LiveMode() {
       store.requestSnapshot()
       rafRef.current = requestAnimationFrame(drawOverlay)
     } catch (e) {
+      setIsSwitching(false)
       setError(e instanceof Error ? e.message : 'Camera stream unreachable.')
     }
   }
+
+  // Poll stream status to clear the loading indicator when frames start flowing
+  useEffect(() => {
+    if (!isSwitching) return
+    let timeoutId: number
+    
+    const checkStatus = async () => {
+      try {
+        const res = await fetch(`${API}/stream/status`)
+        if (res.ok) {
+          const data = await res.json()
+          if (data.is_running && data.last_frame_id > 0) {
+            setIsSwitching(false)
+            return
+          }
+        }
+      } catch (e) {
+        // ignore network errors during switch
+      }
+      timeoutId = window.setTimeout(checkStatus, 500)
+    }
+    
+    checkStatus()
+    return () => clearTimeout(timeoutId)
+  }, [isSwitching])
 
   const stopCamera = useCallback(async () => {
     isRunningRef.current = false
@@ -1540,10 +1568,15 @@ export function LiveMode() {
             <img
               ref={imgRef}
               className="det-video__player"
-              style={{ display: active ? 'block' : 'none', width: '100%', height: '100%', objectFit: 'contain' }}
+              style={{ display: active ? 'block' : 'none', width: '100%', height: '100%', objectFit: 'contain', opacity: isSwitching ? 0.3 : 1, transition: 'opacity 0.3s' }}
               alt="Live Camera Feed"
               crossOrigin="anonymous"
             />
+            {isSwitching && (
+              <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'rgba(0,0,0,0.6)', color: 'var(--color-accent)', fontFamily: 'var(--font-mono)', fontSize: '0.9rem', zIndex: 10, backdropFilter: 'blur(4px)' }}>
+                <span className="det-pulse" style={{ animation: 'pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite' }}>INITIALIZING HARDWARE...</span>
+              </div>
+            )}
             <canvas ref={overlayRef} className="det-video__overlay" />
             {!active && (
               <div className="det-live__placeholder" style={{ position: 'absolute', inset: 0 }}>

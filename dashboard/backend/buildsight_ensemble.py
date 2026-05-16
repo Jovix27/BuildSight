@@ -63,7 +63,7 @@ MODEL_WEIGHTS = [0.55, 0.45]   # [v11_weight, v26_weight]
 
 # ── Primary layer: inference config ───────────────────────────────────────────
 PRE_CONF = 0.45      # pre-NMS confidence sent to each model
-WBF_IOU  = 0.40      # WBF box-matching IoU threshold (primary pass)
+WBF_IOU  = 0.50      # WBF box-matching IoU threshold (primary pass)
 
 # Post-WBF per-class confidence gates (original Toni/Jovi values)
 CLS_THR = {

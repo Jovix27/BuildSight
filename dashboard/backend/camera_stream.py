@@ -71,7 +71,18 @@ class CameraStreamManager:
     def _open_capture(self):
         if self.is_local_camera:
             if os.name == 'nt':
-                cap = cv2.VideoCapture(self.cam_source, cv2.CAP_DSHOW)
+                import concurrent.futures
+                def _probe():
+                    return cv2.VideoCapture(self.cam_source, cv2.CAP_DSHOW)
+                
+                # Hardware Guard: Probe with a hard timeout to prevent deadlocks
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                    try:
+                        cap = executor.submit(_probe).result(timeout=4.0)
+                    except concurrent.futures.TimeoutError:
+                        logger.error(f"Hardware Guard: Camera {self.cam_source} is locked or unresponsive (DSHOW timeout).")
+                        raise RuntimeError(f"Camera {self.cam_source} is locked by another process")
+
                 if not cap.isOpened():
                     logger.warning("DSHOW failed, falling back to default backend")
                     cap = cv2.VideoCapture(self.cam_source)
