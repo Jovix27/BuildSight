@@ -136,7 +136,12 @@ def detect_condition(frame: np.ndarray, rough_worker_boxes: Optional[List[List[f
 
     if brightness < 72:
         return "S3_low_light"
-    if contrast < 52 and saturation < 78:
+    # Overexposed scenes (bright + low contrast + low saturation) are NOT dusty —
+    # they are washed out by strong light. Applying S2_dusty preprocessing (CLAHE
+    # + unsharp mask) to an overexposed frame amplifies the overexposure instead
+    # of correcting it. Dusty/hazy conditions are dim and low-contrast, so require
+    # brightness < 160 as a gate.
+    if contrast < 52 and saturation < 78 and brightness < 160:
         return "S2_dusty"
     if worker_count >= 3 or crowd_overlap >= 0.05:
         return "S4_crowded"
@@ -252,8 +257,15 @@ def wbf_fuse(
             # Workers are tall: discard landscape boxes (excavators, vehicles)
             if aspect > 1.0:
                 continue
-            # Workers rarely fill >15% of normalised image area
-            if bx_w * bx_h > 0.15:
+            # Filter sub-pixel noise (< 0.3% of frame — too small to be a person)
+            if bx_w * bx_h < 0.003:
+                continue
+            # Filter whole-frame false positives only.
+            # Old limit was 0.15 — calibrated for drone/CCTV where workers are far
+            # away and small. Webcam close-ups fill 30-70% of frame, so 0.15 was
+            # silently discarding full-body detections and leaving only the head
+            # region (~3% area) as the surviving detection.
+            if bx_w * bx_h > 0.80:
                 continue
 
         fused.append({
@@ -331,7 +343,9 @@ def wbf_fuse_condition(
                 bx_h = fb[3] - fb[1]
                 if bx_h > 0 and (bx_w / bx_h) > 1.0:
                     continue
-                if bx_w * bx_h > 0.15:
+                if bx_w * bx_h < 0.003:   # sub-pixel noise
+                    continue
+                if bx_w * bx_h > 0.80:    # whole-frame false positive
                     continue
 
             refined.append({
@@ -739,13 +753,18 @@ class EnsemblePipeline:
         h, w      = processed.shape[:2]
 
         # ── Step 3: run both models ────────────────────────────────────────────
+        # Use condition-profile pre_conf (0.08–0.10) so relaxed scenes let
+        # lower-confidence candidates reach WBF.  PRE_CONF (0.45) was filtering
+        # them out before WBF even ran, causing 0-detection sessions.
+        profile      = _PROFILES.get(use_condition, _PROFILES["S1_normal"])
+        pre_conf_eff = profile.get("pre_conf", PRE_CONF)
         raw_preds = []
         for model in (self.model_v11, self.model_v26):
             r = model.predict(
                 processed,
                 device=self.device,
                 verbose=False,
-                conf=PRE_CONF,
+                conf=pre_conf_eff,
                 half=self.use_half,
             )[0]
             boxes, scores, labels = [], [], []
@@ -761,6 +780,32 @@ class EnsemblePipeline:
 
         # ── Step 5: condition-tuned second-pass WBF + worker recovery ─────────
         refined = wbf_fuse_condition(primary, raw_preds, w, h, use_condition)
+
+        # ── Step 5.5: head-to-body expansion ─────────────────────────────────
+        # YOLO trained on distant construction-site footage outputs face-sized
+        # boxes when the camera is a close-up webcam — the face is the only part
+        # of the frame that clearly resembles training data.
+        # Detection ratio: head-box aspect (w/h) > 0.60 → near-square = head only.
+        # Standard head-to-standing-body ratio ≈ 1:7.5; we extend to upper torso
+        # (helmet + vest region) by 3.5× head height, and widen to shoulder width
+        # (~1.3× head width).  Done BEFORE the temporal filter so tracking is
+        # stable on the expanded box, not on the raw head box.
+        _HEAD_BODY_EXT = 3.5   # extend bottom by N × head height
+        _SHOULDER_MULT = 0.65  # half shoulder-width = N × head-width
+        for d in refined:
+            if d.get("cls") != CLS_WORKER:
+                continue
+            bx = d["box"]          # [x1, y1, x2, y2] absolute pixel coords
+            bw = bx[2] - bx[0]
+            bh = bx[3] - bx[1]
+            if bh <= 0:
+                continue
+            if (bw / bh) > 0.60:   # head-shaped: extend downward
+                bx[3] = min(float(h), bx[3] + bh * _HEAD_BODY_EXT)
+                cx    = (bx[0] + bx[2]) / 2.0
+                hw    = bw * _SHOULDER_MULT
+                bx[0] = max(0.0,     cx - hw)
+                bx[2] = min(float(w), cx + hw)
 
         # ── Step 6: temporal PPE filter ───────────────────────────────────────
         filtered = self.temporal.update(refined, self._frame_idx)
