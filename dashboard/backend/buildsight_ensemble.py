@@ -128,9 +128,9 @@ def detect_condition(frame: np.ndarray, rough_worker_boxes: Optional[List[List[f
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    brightness   = float(np.mean(gray))
-    contrast     = float(np.std(gray))
-    saturation   = float(np.mean(hsv[:, :, 1]))
+    brightness   = float(gray.mean())
+    contrast     = float(gray.std())
+    saturation   = float(hsv[:, :, 1].mean())
     worker_count = len(rough_worker_boxes)
     crowd_overlap = _mean_pairwise_iou(rough_worker_boxes)
 
@@ -581,7 +581,8 @@ class TemporalPPEFilter:
         # ── Filter: ghost / static / low-human-score suppression ────────────
         valid_workers: List[Dict] = []
         for w in workers:
-            t = self.tracks.get(w.get("track_id"))
+            track_id = w.get("track_id")
+            t = self.tracks.get(track_id) if isinstance(track_id, int) else None
             if t is None:
                 valid_workers.append(w)
                 continue
@@ -659,7 +660,7 @@ class EnsemblePipeline:
         model_v11=None,
         model_v26=None,
     ) -> None:
-        from ultralytics import YOLO
+        from ultralytics import YOLO  # type: ignore
         import torch
 
         if device == "auto":
