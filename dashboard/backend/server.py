@@ -2731,10 +2731,14 @@ def enumerate_cameras():
                 "resolution": f"{w}x{h}",
                 "width": w, "height": h, "active": True,
             }
-        # Use default backend (NOT DSHOW) for probing — DSHOW holds the hardware
-        # handle for several seconds after release on Windows, blocking stream/start.
+        # On Windows, try DSHOW first (more reliable for USB cameras)
         try:
-            cap = cv2.VideoCapture(idx)
+            if os.name == 'nt':
+                cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+                if not cap.isOpened():
+                    cap = cv2.VideoCapture(idx)
+            else:
+                cap = cv2.VideoCapture(idx)
             if not cap.isOpened():
                 return None
             ret, frame = cap.read()
