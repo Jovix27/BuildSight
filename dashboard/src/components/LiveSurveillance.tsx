@@ -164,17 +164,27 @@ export function LiveSurveillance() {
     }
   }, [])
 
-  // ── Store → UI metrics sync ───────────────────────────────────────────────
-  // Only updates React state (sidebar numbers). Hot-path drawing uses refs.
+  // ── FPS / latency / condition — updates on every backend frame (even 0 dets)
+  // MUST be a separate effect from detection count — if merged with the det-count
+  // effect and guarded by dets.length > 0, FPS shows 0 when pipeline runs but
+  // no workers are in frame, making the system appear frozen.
+  useEffect(() => {
+    if (!isActiveRef.current) return
+    if (store.fps > 0 || store.latencyMs > 0) {
+      setFps(store.fps)
+      setLatency(store.latencyMs)
+    }
+    if (store.sceneCondition) {
+      setCondition(store.sceneCondition.replace(/_/g, ' ').toUpperCase())
+    }
+  }, [store.fps, store.latencyMs, store.sceneCondition])
+
+  // ── Detection count / alerts — only when workers are actually found ─────────
   useEffect(() => {
     if (!isActiveRef.current) return
     const dets = store.detections
     if (!dets?.length) return
-
     setDetCount(dets.length)
-    setLatency(store.latencyMs)
-    setFps(store.fps)
-    setCondition((store.sceneCondition ?? 'S1_normal').replace(/_/g, ' ').toUpperCase())
     pushDetections(dets, store.latencyMs, [], [], store.fps, store.sceneCondition)
     dets.forEach((d: any) => {
       if (d.class === 'worker' || d.class === 'person') emitAlert(d)

@@ -1403,12 +1403,16 @@ def classify_scene_fast(
 
     # ── S2 Dusty ─────────────────────────────────────────────────────────────
     # Haze signal: top-5% brightest pixels washed out (fog / dust scatter)
+    # brightness < 175 gate: real haze/dust is DIM (overall mean < 175).
+    # Without this gate, an overexposed room (bright window behind person)
+    # triggers the haze signal and gets CLAHE applied, amplifying overexposure.
     top5_thresh = np.percentile(gray, 95)
     haze_level  = float(np.mean(gray[gray >= top5_thresh]))
-    if haze_level >= AUTO_HAZE_THRESH:
+    if haze_level >= AUTO_HAZE_THRESH and brightness < 175:
         return _scene_tracker.update("S2_dusty")
     # Classic dusty: low contrast + low saturation (desaturated, washed out)
-    if contrast < AUTO_DUSTY_STD_THRESH and saturation < AUTO_DUSTY_SAT_THRESH:
+    # Same brightness gate — overexposed scenes share low contrast + low sat profile.
+    if contrast < AUTO_DUSTY_STD_THRESH and saturation < AUTO_DUSTY_SAT_THRESH and brightness < 160:
         return _scene_tracker.update("S2_dusty")
 
     # ── S4 Crowded (model-based — cached) ────────────────────────────────────
