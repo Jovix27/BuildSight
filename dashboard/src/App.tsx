@@ -24,7 +24,8 @@ import { AnimatePresence } from 'framer-motion'
 import './App.css'
 import { AlertLog, type AlertItem } from './components/AlertLog'
 import { MetricCard } from './components/MetricCard'
-import { DetectionPanel, LiveMode } from './components/DetectionPanel'
+import { DetectionPanel } from './components/DetectionPanel'
+import { LiveSurveillance } from './components/LiveSurveillance'
 import { SettingsPanel } from './components/SettingsPanel'
 import { SettingsProvider, useSettings } from './SettingsContext'
 import { DetectionStatsProvider, useDetectionStats } from './DetectionStatsContext'
@@ -483,7 +484,7 @@ function AppInner() {
                 </div>
                 <div className="video-viewport">
                   {dashboardMode === 'LIVE' ? (
-                  <LiveMode />
+                  <LiveSurveillance />
                 ) : (
                   <DetectionPanel mode={dashboardMode} />
                 )}
