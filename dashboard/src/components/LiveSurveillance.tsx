@@ -24,7 +24,8 @@
 import {
   useState, useEffect, useRef, useCallback, useMemo,
 } from 'react'
-import { useCameraDevices }  from '../hooks/useCameraDevices'
+// useCameraDevices intentionally NOT imported — getUserMedia locks the physical
+// camera handle on Windows for 10-60s, blocking the backend DSHOW open.
 import { useDetectionStats } from '../DetectionStatsContext'
 import { useDetectionStore } from '../store/detectionStore'
 import './LiveSurveillance.css'
@@ -91,13 +92,29 @@ export function LiveSurveillance() {
   const { pushDetections, setRunning, setModelName } = useDetectionStats()
   const store = useDetectionStore()
 
-  // ── Camera devices ────────────────────────────────────────────────────────
-  const { devices, isEnumerating, refresh } = useCameraDevices()
-  const [selectedId, setSelectedId] = useState<string>('')
+  // ── Camera devices (from backend — never getUserMedia) ────────────────────
+  interface BackendCamera { index: number; label: string; resolution: string; active: boolean }
+  const [backendCameras,    setBackendCameras]    = useState<BackendCamera[]>([])
+  const [selectedCamIdx,    setSelectedCamIdx]    = useState<number>(0)
+  const [isFetchingCameras, setIsFetchingCameras] = useState(false)
 
-  useEffect(() => {
-    if (!selectedId && devices.length > 0) setSelectedId(devices[0].deviceId)
-  }, [devices, selectedId])
+  const fetchBackendCameras = useCallback(async () => {
+    setIsFetchingCameras(true)
+    try {
+      const res  = await fetch(`${API}/api/stream/cameras`)
+      const data = await res.json()
+      const cams: BackendCamera[] = (data.cameras ?? []).sort(
+        (a: BackendCamera, b: BackendCamera) => a.index - b.index
+      )
+      setBackendCameras(cams)
+      if (cams.length > 0 && !cams.find(c => c.index === selectedCamIdx)) {
+        setSelectedCamIdx(cams[0].index)
+      }
+    } catch { /* backend not up yet — silently ignore */ }
+    finally { setIsFetchingCameras(false) }
+  }, [selectedCamIdx])
+
+  useEffect(() => { fetchBackendCameras() }, [])
 
   // ── Stream state ──────────────────────────────────────────────────────────
   const [isStreaming, setIsStreaming] = useState(false)
@@ -313,10 +330,8 @@ export function LiveSurveillance() {
   }, [])  // stable — reads store and refs directly, no stale closures
 
   // ── Start camera ──────────────────────────────────────────────────────────
-  const startCamera = useCallback(async (deviceId?: string) => {
-    const id     = deviceId ?? selectedId
-    const idx    = devices.findIndex(d => d.deviceId === (id || devices[0]?.deviceId))
-    const camIdx = Math.max(0, idx)
+  const startCamera = useCallback(async (camIdx?: number) => {
+    const idx = camIdx ?? selectedCamIdx
 
     setError(null)
     setIsStarting(true)
@@ -328,7 +343,7 @@ export function LiveSurveillance() {
       const res = await fetch(`${API}/api/stream/start`, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ rtsp_url: String(camIdx) }),
+        body:    JSON.stringify({ rtsp_url: String(idx) }),
       })
       if (!res.ok) throw new Error(`Stream start failed: HTTP ${res.status}`)
 
@@ -351,7 +366,7 @@ export function LiveSurveillance() {
     } finally {
       setIsStarting(false)
     }
-  }, [selectedId, devices, drawLoop, setModelName, setRunning, store])
+  }, [selectedCamIdx, drawLoop, setModelName, setRunning, store])
 
   // ── Stop camera ───────────────────────────────────────────────────────────
   const stopCamera = useCallback(async () => {
@@ -381,12 +396,13 @@ export function LiveSurveillance() {
   }, [setRunning])
 
   // ── Switch camera ─────────────────────────────────────────────────────────
-  const switchCamera = useCallback(async (deviceId: string) => {
-    setSelectedId(deviceId)
+  const switchCamera = useCallback(async (camIdx: number) => {
+    setSelectedCamIdx(camIdx)
     if (isStreaming) {
       await stopCamera()
-      await new Promise<void>(r => setTimeout(r, 200))
-      await startCamera(deviceId)
+      // 1500ms: Windows DSHOW needs time to fully release the handle
+      await new Promise<void>(r => setTimeout(r, 1500))
+      await startCamera(camIdx)
     }
   }, [isStreaming, stopCamera, startCamera])
 
@@ -410,9 +426,8 @@ export function LiveSurveillance() {
     return Object.entries(counts)
   }, [store.detections])
 
-  const selectedLabel = devices.find(d => d.deviceId === selectedId)?.label
-    ?? (devices[0]?.label ?? 'Camera')
-  const displayName = selectedLabel.replace(/\(.*?\)/g, '').trim()
+  const displayName = (backendCameras.find(c => c.index === selectedCamIdx)?.label
+    ?? backendCameras[0]?.label ?? 'Camera').replace(/\(.*?\)/g, '').trim()
 
   // ── JSX ───────────────────────────────────────────────────────────────────
   return (
@@ -466,7 +481,7 @@ export function LiveSurveillance() {
                   </svg>
                   <span className="lsv__placeholder-title">Camera Offline</span>
                   <span className="lsv__placeholder-sub">
-                    {devices.length === 0
+                    {backendCameras.length === 0
                       ? 'No cameras detected — connect a device and click Refresh'
                       : 'Select a camera and press START'}
                   </span>
@@ -511,21 +526,21 @@ export function LiveSurveillance() {
                 </svg>
                 <select
                   className="lsv__select"
-                  value={selectedId}
-                  onChange={e => switchCamera(e.target.value)}
-                  disabled={devices.length === 0 || isStreaming}
+                  value={selectedCamIdx}
+                  onChange={e => switchCamera(Number(e.target.value))}
+                  disabled={backendCameras.length === 0 || isStreaming}
                 >
-                  {devices.length === 0 && <option value="">No cameras found</option>}
-                  {devices.map(cam => (
-                    <option key={cam.deviceId} value={cam.deviceId}>{cam.label}</option>
+                  {backendCameras.length === 0 && <option value="">No cameras found</option>}
+                  {backendCameras.map(cam => (
+                    <option key={cam.index} value={cam.index}>{cam.label}</option>
                   ))}
                 </select>
               </div>
 
               <button
                 className="lsv__btn lsv__btn--refresh"
-                onClick={refresh}
-                disabled={isEnumerating}
+                onClick={fetchBackendCameras}
+                disabled={isFetchingCameras}
                 title="Refresh available cameras"
               >
                 <svg viewBox="0 0 16 16" width="13" height="13" fill="none"
@@ -533,7 +548,7 @@ export function LiveSurveillance() {
                   <path d="M2 8a6 6 0 0111.5-3M14 8a6 6 0 01-11.5 3" />
                   <path d="M14 2v3h-3M2 14v-3h3" />
                 </svg>
-                {isEnumerating ? 'Scanning…' : 'REFRESH'}
+                {isFetchingCameras ? 'Scanning…' : 'REFRESH'}
               </button>
             </div>
 
@@ -581,7 +596,7 @@ export function LiveSurveillance() {
               </div>
               <div className="lsv__info-row">
                 <span className="lsv__info-label">Devices</span>
-                <span className="lsv__info-value">{devices.length} found</span>
+                <span className="lsv__info-value">{backendCameras.length} found</span>
               </div>
             </div>
           </div>

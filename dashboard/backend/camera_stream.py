@@ -121,7 +121,7 @@ class CameraStreamManager:
 
                 # Warm-up: discard early frames to let exposure/white balance settle
                 if self.is_local_camera:
-                    for _ in range(20):
+                    for _ in range(5):
                         cap.read()
 
                 frames_read = 0

@@ -136,7 +136,10 @@ def detect_condition(frame: np.ndarray, rough_worker_boxes: Optional[List[List[f
 
     if brightness < 72:
         return "S3_low_light"
-    if contrast < 52 and saturation < 78:
+    # brightness < 160 gate: dusty/hazy scenes are DIM. Without this gate,
+    # overexposed frames (bright blown-out background) match the same low-contrast
+    # + low-saturation profile and get CLAHE applied, amplifying the overexposure.
+    if contrast < 52 and saturation < 78 and brightness < 160:
         return "S2_dusty"
     if worker_count >= 3 or crowd_overlap >= 0.05:
         return "S4_crowded"
@@ -252,8 +255,9 @@ def wbf_fuse(
             # Workers are tall: discard landscape boxes (excavators, vehicles)
             if aspect > 1.0:
                 continue
-            # Workers rarely fill >15% of normalised image area
-            if bx_w * bx_h > 0.15:
+            # Webcam close-ups: a person can fill 30-70% of the frame (area ~0.35).
+            # Only discard whole-frame false positives (>80%) and sub-pixel noise.
+            if bx_w * bx_h < 0.003 or bx_w * bx_h > 0.80:
                 continue
 
         fused.append({
@@ -331,7 +335,7 @@ def wbf_fuse_condition(
                 bx_h = fb[3] - fb[1]
                 if bx_h > 0 and (bx_w / bx_h) > 1.0:
                     continue
-                if bx_w * bx_h > 0.15:
+                if bx_w * bx_h < 0.003 or bx_w * bx_h > 0.80:
                     continue
 
             refined.append({
@@ -738,13 +742,18 @@ class EnsemblePipeline:
         h, w      = processed.shape[:2]
 
         # ── Step 3: run both models ────────────────────────────────────────────
+        # Use condition-profile pre_conf (0.07-0.10), NOT the module-level
+        # PRE_CONF=0.45. High pre_conf silently kills 40-50% confidence
+        # detections before WBF fusion ever runs.
+        profile      = _PROFILES.get(use_condition, _PROFILES["S1_normal"])
+        pre_conf_eff = profile.get("pre_conf", PRE_CONF)
         raw_preds = []
         for model in (self.model_v11, self.model_v26):
             r = model.predict(
                 processed,
                 device=self.device,
                 verbose=False,
-                conf=PRE_CONF,
+                conf=pre_conf_eff,
                 half=self.use_half,
             )[0]
             boxes, scores, labels = [], [], []
@@ -760,6 +769,27 @@ class EnsemblePipeline:
 
         # ── Step 5: condition-tuned second-pass WBF + worker recovery ─────────
         refined = wbf_fuse_condition(primary, raw_preds, w, h, use_condition)
+
+        # ── Step 5.5: head-to-body expansion ─────────────────────────────────
+        # On a close-up webcam the YOLO model often outputs a near-square face/
+        # head box (aspect w/h > 0.60). Expand it to a full-body box before the
+        # temporal tracker so tracking is stable on the correct region.
+        _HEAD_BODY_EXT = 3.5   # extend 3.5× head height downward
+        _SHOULDER_MULT = 0.65  # shoulder width as fraction of head width
+        for d in refined:
+            if d.get("cls") != CLS_WORKER:
+                continue
+            bx = d["box"]
+            bw = bx[2] - bx[0]
+            bh = bx[3] - bx[1]
+            if bh <= 0:
+                continue
+            if (bw / bh) > 0.60:  # near-square → head/face detection
+                bx[3] = min(float(h), bx[3] + bh * _HEAD_BODY_EXT)
+                cx    = (bx[0] + bx[2]) / 2.0
+                hw    = bw * _SHOULDER_MULT
+                bx[0] = max(0.0,      cx - hw)
+                bx[2] = min(float(w), cx + hw)
 
         # ── Step 6: temporal PPE filter ───────────────────────────────────────
         filtered = self.temporal.update(refined, self._frame_idx)
