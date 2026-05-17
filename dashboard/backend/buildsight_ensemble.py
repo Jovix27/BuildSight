@@ -121,8 +121,10 @@ RECOVERY_COOLDOWN_FRAMES = 2
 #  Scene classification
 # ══════════════════════════════════════════════════════════════════════════════
 
-def detect_condition(frame: np.ndarray, rough_worker_boxes: List[List[float]] = []) -> str:
+def detect_condition(frame: np.ndarray, rough_worker_boxes: Optional[List[List[float]]] = None) -> str:
     """Classify frame as S1_normal / S2_dusty / S3_low_light / S4_crowded."""
+    if rough_worker_boxes is None:
+        rough_worker_boxes = []
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
     hsv  = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
@@ -225,15 +227,15 @@ def wbf_fuse(
         for j in range(i + 1, len(flat)):
             if used[j] or flat[j][2] != l_i:
                 continue
-            if _iou(b_i, flat[j][0]) > iou_thr:
+            if any(_iou(flat[j][0], b) > iou_thr for b in cluster_b):
                 cluster_b.append(flat[j][0])
                 cluster_s.append(flat[j][1])
                 cluster_m.append(flat[j][3])
                 used[j] = True
 
-        ws        = np.array(cluster_s, dtype=np.float32)
-        ws        = ws / ws.sum()
-        fused_s   = float(np.mean(cluster_s))
+        rw        = np.array([MODEL_WEIGHTS[m] * s for m, s in zip(cluster_m, cluster_s)], dtype=np.float32)
+        ws        = rw / max(rw.sum(), 1e-6)
+        fused_s   = float(np.average(cluster_s, weights=ws))
         n_models  = len(set(cluster_m))
 
         if fused_s < CLS_THR.get(l_i, 0.30):
@@ -307,7 +309,7 @@ def wbf_fuse_condition(
             for j in range(i + 1, len(cls_flat)):
                 if used[j]:
                     continue
-                if _iou(cls_flat[i][0], cls_flat[j][0]) >= iou_thresh:
+                if any(_iou(cls_flat[j][0], b) >= iou_thresh for b in cluster_b):
                     cluster_b.append(cls_flat[j][0])
                     cluster_s.append(cls_flat[j][1])
                     cluster_m.append(cls_flat[j][2])
@@ -322,6 +324,16 @@ def wbf_fuse_condition(
                 continue
 
             fb = np.average(cluster_b, axis=0, weights=nw)
+            # Apply same geometric guardrails as primary WBF pass (fix: primary_dets
+            # was passed in but never used, so guardrails were silently bypassed)
+            if cls_id == CLS_WORKER:
+                bx_w = fb[2] - fb[0]
+                bx_h = fb[3] - fb[1]
+                if bx_h > 0 and (bx_w / bx_h) > 1.0:
+                    continue
+                if bx_w * bx_h > 0.15:
+                    continue
+
             refined.append({
                 "box":      [fb[0]*img_w, fb[1]*img_h, fb[2]*img_w, fb[3]*img_h],
                 "score":    min(0.99, fused_s),
@@ -341,6 +353,12 @@ def wbf_fuse_condition(
 def _advance_recovery_frame() -> None:
     global _recovery_frame
     _recovery_frame += 1
+    # Trim stale entries every 100 frames to prevent unbounded dict growth
+    if _recovery_frame % 100 == 0:
+        cutoff = _recovery_frame - RECOVERY_COOLDOWN_FRAMES * 10
+        stale = [k for k, v in _recovery_cooldown.items() if v < cutoff]
+        for k in stale:
+            del _recovery_cooldown[k]
 
 
 def _grid_cell(box: List[float], cell_size: int = 80) -> str:
@@ -486,7 +504,7 @@ def _synthetic_ppe(worker_box: List[float], cls_id: int, score: float) -> Option
     x1, y1, x2, y2 = worker_box
     w, h = x2 - x1, y2 - y1
     if cls_id == CLS_HELMET:
-        return {"box": [x1+0.28*w, y1-0.04*h, x1+0.72*w, y1+0.22*h], "score": score, "cls": cls_id, "synthetic": True, "n_models": 1}
+        return {"box": [x1+0.28*w, max(0.0, y1-0.04*h), x1+0.72*w, y1+0.22*h], "score": score, "cls": cls_id, "synthetic": True, "n_models": 1}
     if cls_id == CLS_VEST:
         return {"box": [x1+0.18*w, y1+0.18*h, x1+0.82*w, y1+0.62*h], "score": score, "cls": cls_id, "synthetic": True, "n_models": 1}
     return None
@@ -547,15 +565,14 @@ class TemporalPPEFilter:
             t.helmet_streak = min(6, t.helmet_streak + 1) if has_h else max(0, t.helmet_streak - 1)
             t.vest_streak   = min(6, t.vest_streak   + 1) if has_v else max(0, t.vest_streak   - 1)
 
-            # Infer PPE from streak — prevents flicker on occluded helmets/vests
+            # Infer PPE from streak — prevents flicker on occluded helmets/vests.
+            # Fix: set flags directly on worker instead of generating synthetic
+            # boxes that contaminate the shared PPE pool and cause false compliance
+            # on adjacent workers.
             if not has_h and t.helmet_streak >= 2:
-                syn = _synthetic_ppe(w["box"], CLS_HELMET, 0.16)
-                if syn:
-                    ppe.append(syn)
+                w["_inferred_helmet"] = True
             if not has_v and t.vest_streak >= 2:
-                syn = _synthetic_ppe(w["box"], CLS_VEST, 0.18)
-                if syn:
-                    ppe.append(syn)
+                w["_inferred_vest"] = True
 
         # ── Prune stale tracks ───────────────────────────────────────────────
         for tid in [tid for tid, t in self.tracks.items() if t.misses > self.max_misses]:
@@ -573,7 +590,9 @@ class TemporalPPEFilter:
             # RECALL FIX: lowered score bypass 0.72→0.45 so workers that both
             # models agree on (fused score ~0.35-0.44) aren't invisible on frame 1.
             has_ppe = t.helmet_streak > 0 or t.vest_streak > 0
-            if t.hits < 2 and not has_ppe and w["score"] < 0.45:
+            # Ghost suppression: bypass if both models agree (n_models >= 2) —
+            # dual-model consensus is strong evidence even on the first frame.
+            if t.hits < 2 and not has_ppe and w["score"] < 0.45 and w.get("n_models", 1) < 2:
                 continue
 
             # Human-score gate: relaxed EMA floor 0.40→0.28 for S4 —
@@ -605,13 +624,14 @@ class TemporalPPEFilter:
 # ══════════════════════════════════════════════════════════════════════════════
 
 def associate_ppe(dets: List[Dict]) -> List[Dict]:
-    """Tag each worker with has_helmet / has_vest based on centroid containment."""
+    """Tag each worker with has_helmet / has_vest based on centroid containment
+    and streak-inferred flags set by TemporalPPEFilter."""
     workers = [d for d in dets if d["cls"] == CLS_WORKER]
     ppe     = [d for d in dets if d["cls"] in (CLS_HELMET, CLS_VEST)]
 
     for w in workers:
-        w["has_helmet"] = _worker_has_ppe(w["box"], ppe, CLS_HELMET)
-        w["has_vest"]   = _worker_has_ppe(w["box"], ppe, CLS_VEST)
+        w["has_helmet"] = w.pop("_inferred_helmet", False) or _worker_has_ppe(w["box"], ppe, CLS_HELMET)
+        w["has_vest"]   = w.pop("_inferred_vest",   False) or _worker_has_ppe(w["box"], ppe, CLS_VEST)
 
     return dets
 
@@ -697,15 +717,21 @@ class EnsemblePipeline:
         t0 = time.perf_counter()
 
         if reset:
+            global _recovery_cooldown, _recovery_frame
             self.temporal.reset()
             self._frame_idx = 0
+            _recovery_cooldown.clear()
+            _recovery_frame = 0
 
         self._frame_idx += 1
 
         # ── Step 1: scene classification ──────────────────────────────────────
         use_condition = condition if condition != "auto" else self.condition
         if use_condition == "auto":
-            use_condition = detect_condition(frame_bgr)
+            # Use previous-frame worker bboxes for crowd detection (1-frame lag,
+            # far better than always passing [] which made S4_crowded unreachable)
+            prev_workers = [list(t.bbox) for t in self.temporal.tracks.values() if t.misses == 0]
+            use_condition = detect_condition(frame_bgr, prev_workers)
 
         # ── Step 2: condition-aware preprocessing ─────────────────────────────
         processed = preprocess_frame(frame_bgr, use_condition)
