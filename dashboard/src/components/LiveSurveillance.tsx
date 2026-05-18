@@ -15,8 +15,8 @@
  *   • canvas.width  = canvas.clientWidth   (CSS pixels, no DPR scaling)
  *   • canvas.height = canvas.clientHeight  (CSS pixels, no DPR scaling)
  *   • No canvas.style.width override       (lets CSS 100%×100% control layout)
- *   • _letterbox uses img.naturalWidth/naturalHeight for aspect ratio
- *   • fw/fh computed via inferScale (min(1, 640 / max(natW, natH)))
+ *   • _letterbox uses st.frameWidth/frameHeight (backend inference dims — NOT img.naturalWidth)
+ *   • fw/fh from same backend dims so letterbox and coordinate scaling are always in sync
  *   • mergeTracks with IoU ≥ 0.25 (identical to DetectionPanel)
  *   • Boxes drawn via EMA lerp each RAF tick for smooth motion
  */
@@ -293,19 +293,15 @@ export function LiveSurveillance() {
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    // Skip drawing if no MJPEG frame has arrived yet (img not decoded)
-    if (!img.naturalWidth || !img.naturalHeight || isNaN(img.naturalWidth)) {
-      rafRef.current = requestAnimationFrame(drawLoop)
-      return
-    }
-
-    // ── Coordinate transform (matches DetectionPanel.LiveMode exactly) ────────
-    // Letterbox uses img.naturalWidth/naturalHeight (actual MJPEG frame dims).
-    // fw/fh uses backend-reported inference dims; falls back to naturalWidth.
-    const { rw, rh, ox, oy } = _letterbox(img.naturalWidth, img.naturalHeight, dw, dh)
+    // ── Coordinate transform ──────────────────────────────────────────────────
+    // Use backend-authoritative inference dimensions for BOTH letterbox and
+    // coordinate scaling. img.naturalWidth is the raw MJPEG stream resolution
+    // which may differ from inference resolution (e.g. 1280×720 stream but
+    // 640×360 inference). Using them separately causes boxes 2× too large.
     const st = useDetectionStore.getState()
-    const fw = frameWRef.current = st.frameWidth || img.naturalWidth
-    const fh = frameHRef.current = st.frameHeight || img.naturalHeight
+    const fw = frameWRef.current = st.frameWidth || 640
+    const fh = frameHRef.current = st.frameHeight || 480
+    const { rw, rh, ox, oy } = _letterbox(fw, fh, dw, dh)
 
     // ── Consume pending detections — run IoU tracker ──────────────────────────
     if (pendingRef.current !== null) {
