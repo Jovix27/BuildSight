@@ -80,17 +80,6 @@ const CLASS_COLORS: Record<string, string> = {
   person: '#00c864',
 }
 
-/** 
- * Helper to resolve CSS variables like 'var(--color-accent)' to hex/rgb 
- * since Canvas fillStyle doesn't support them natively.
- */
-function resolveCssVar(varName: string): string {
-  if (!varName.startsWith('var(')) return varName
-  const name = varName.match(/\((--[^)]+)\)/)?.[1]
-  if (!name) return '#ff9900' // Fail-safe fallback
-  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || '#ff9900'
-}
-
 // ── Lightweight IoU tracker (module-level, no React state) ─────────────────────
 
 let _nextTrackId = 0
@@ -274,18 +263,6 @@ function drawRiskZones(
     ctx.fillText(label, sx1 + 4, Math.max(10, sy1 - 4))
   })
   ctx.restore()
-}
-
-function pointsFromHeatmap(payload: DetectionHeatmapPayload | undefined, now: number): HeatmapPoint[] {
-  if (!payload?.points?.length) return []
-  return payload.points.map(point => ({
-    x: point.x,
-    y: point.y,
-    time: now,
-    type: point.type,
-    value: point.value,
-    riskLevel: point.risk_level,
-  }))
 }
 
 // ── Shared condition picker ─────────────────────────────────────────────────────
@@ -502,10 +479,8 @@ function ImageOverlay({ imageB64, detections }: { imageB64: string, detections: 
         if (isWorkerBox) {
           if (det.has_helmet === true && det.has_vest === true) {
             borderCol = '#00c864'
-          } else if (det.has_helmet === false && det.has_vest === false) {
-            borderCol = '#ff2a2a'
           } else {
-            borderCol = '#ffaa00'
+            borderCol = '#ff2a2a'
           }
         }
 
@@ -820,38 +795,29 @@ const fh = Math.max(1, Math.round(vh * inferScale))
       for (const det of currentDetections) {
         const box = det.box
         if (!box || box.length < 4) continue
-        
-        // Directly scale box coordinates to display canvas
+
+        // Only draw worker/person boxes — helmet and vest detections are suppressed.
+        // PPE status is conveyed via box colour: green = compliant, red = any violation.
+        const isWorker = det.class === 'worker' || det.class === 'person'
+        if (!isWorker) continue
+
         const x1 = (box[0] / fw) * rw + ox
         const y1 = (box[1] / fh) * rh + oy
         const x2 = (box[2] / fw) * rw + ox
         const y2 = (box[3] / fh) * rh + oy
-        
-        // Determine box color
-        const isWorker = det.class === 'worker' || det.class === 'person'
-        let borderCol = '#00c864' // green for worker by default
-        if (isWorker) {
-          if (det.has_helmet === true && det.has_vest === true) {
-            borderCol = '#00c864' // green - compliant
-          } else if (det.has_helmet === false && det.has_vest === false) {
-            borderCol = '#ff2a2a' // red - full violation
-          } else {
-            borderCol = '#ffaa00' // orange - partial
-          }
-        } else if (det.class === 'helmet') {
-          borderCol = '#ffd600'
-        } else if (det.class === 'safety_vest' || det.class === 'vest') {
-          borderCol = '#00bfff'
-        }
-        
-        // Draw the box
+
+        const borderCol = (det.has_helmet === true && det.has_vest === true)
+          ? '#00c864'   // green — fully compliant
+          : '#ff2a2a'   // red — any violation
+
         ctx.strokeStyle = borderCol
         ctx.lineWidth = 3
         ctx.strokeRect(x1, y1, x2 - x1, y2 - y1)
-        
-        // Draw label
+
         const conf = Math.round(det.confidence * 100)
-        const label = `${det.class} ${conf}%`
+        const helmBadge = det.has_helmet === false ? ' ⚠H' : ''
+        const vestBadge = det.has_vest === false ? ' ⚠V' : ''
+        const label = `W ${conf}%${helmBadge}${vestBadge}`
         ctx.font = 'bold 14px monospace'
         ctx.fillStyle = borderCol
         ctx.fillRect(x1, Math.max(0, y1 - 20), ctx.measureText(label).width + 10, 20)
@@ -1413,10 +1379,8 @@ export function LiveMode() {
       if (isWorkerBoxLive) {
         if (t.has_helmet === true && t.has_vest === true) {
           borderColLive = '#00c864'   // green – fully compliant
-        } else if (t.has_helmet === false && t.has_vest === false) {
-          borderColLive = '#ff2a2a'   // red – full violation
         } else {
-          borderColLive = '#ffaa00'   // orange – partial violation
+          borderColLive = '#ff2a2a'   // red – any PPE violation (partial or full)
         }
       } else if (t.cls === 'helmet' || t.cls === 'hardhat') {
         borderColLive = '#ffd600'     // yellow – helmet

@@ -32,31 +32,29 @@ import './LiveSurveillance.css'
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const API             = 'http://localhost:8000'
+const API = 'http://localhost:8000'
 const ALERT_DEDUPE_MS = 6_000
-const MAX_ALERTS      = 15
-const MAX_INFER_DIM   = 640    // matches backend ensemble pipeline
-const LERP            = 0.45   // EMA factor — higher = snappier, lower = smoother
+const MAX_ALERTS = 15
+const LERP = 0.60   // EMA factor for track position smoothing (matches DetectionPanel.LiveMode)
 
 // ── Colour mapping (identical to DetectionPanel + old LiveMode) ───────────────
 
 const CLASS_COLOR: Record<string, string> = {
-  worker:        '#00c864',
-  person:        '#00c864',
-  helmet:        '#ffd600',
-  hardhat:       '#ffd600',
-  safety_vest:   '#00bfff',
+  worker: '#00c864',
+  person: '#00c864',
+  helmet: '#ffd600',
+  hardhat: '#ffd600',
+  safety_vest: '#00bfff',
   'safety-vest': '#00bfff',
-  vest:          '#00bfff',
-  machinery:     '#ff44ff',
-  vehicle:       '#ff44ff',
+  vest: '#00bfff',
+  machinery: '#ff44ff',
+  vehicle: '#ff44ff',
 }
 
 function workerColor(h?: boolean | null, v?: boolean | null): string {
-  if (h == null || v == null) return '#ffaa00'
-  if (h && v)   return '#00c864'
-  if (!h && !v) return '#ff2a2a'
-  return '#ffaa00'
+  if (h == null || v == null) return '#ff2a2a'
+  if (h && v) return '#00c864'
+  return '#ff2a2a'
 }
 
 /** Compute letterbox offsets for object-fit:contain rendering (same as DetectionPanel) */
@@ -74,14 +72,79 @@ function hms(ts: number) {
     .map(n => String(n).padStart(2, '0')).join(':')
 }
 
+// ── IoU tracker (identical to DetectionPanel.LiveMode) ────────────────────────
+
+let _nextTrackId = 0
+
+interface Track {
+  id: number
+  cls: string
+  confidence: number
+  frameBox: [number, number, number, number]
+  sx1: number; sy1: number; sx2: number; sy2: number
+  initialized: boolean
+  missed: number
+  has_helmet?: boolean
+  has_vest?: boolean
+}
+
+function _boxIou(a: number[], b: number[]): number {
+  const x1 = Math.max(a[0], b[0]), y1 = Math.max(a[1], b[1])
+  const x2 = Math.min(a[2], b[2]), y2 = Math.min(a[3], b[3])
+  const inter = Math.max(0, x2 - x1) * Math.max(0, y2 - y1)
+  if (inter === 0) return 0
+  const ua = (a[2] - a[0]) * (a[3] - a[1])
+  const ub = (b[2] - b[0]) * (b[3] - b[1])
+  return inter / Math.max(ua + ub - inter, 1e-6)
+}
+
+function mergeTracks(tracks: Track[], newDets: any[]): Track[] {
+  const matched = new Set<number>()
+  for (const t of tracks) {
+    let bestIou = 0.25, bestIdx = -1
+    for (let i = 0; i < newDets.length; i++) {
+      const d = newDets[i]
+      if ((d.class ?? d.cls) !== t.cls || !d.box) continue
+      const iou = _boxIou(t.frameBox as number[], d.box as number[])
+      if (iou > bestIou) { bestIou = iou; bestIdx = i }
+    }
+    if (bestIdx >= 0) {
+      const nd = newDets[bestIdx]
+      t.frameBox = nd.box
+      t.confidence = nd.confidence
+      t.has_helmet = nd.has_helmet
+      t.has_vest = nd.has_vest
+      t.missed = 0
+      matched.add(bestIdx)
+    } else {
+      t.missed++
+    }
+  }
+  const alive = tracks.filter(t => t.missed <= 2)
+  newDets.forEach((d, i) => {
+    if (matched.has(i) || !d.box) return
+    alive.push({
+      id: _nextTrackId++,
+      cls: d.class ?? d.cls ?? 'unknown',
+      confidence: d.confidence,
+      frameBox: d.box,
+      sx1: 0, sy1: 0, sx2: 0, sy2: 0,
+      initialized: false, missed: 0,
+      has_helmet: d.has_helmet,
+      has_vest: d.has_vest,
+    })
+  })
+  return alive
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface LiveAlert {
-  id:       string
-  time:     string
+  id: string
+  time: string
   severity: 'critical' | 'warning'
-  title:    string
-  ts:       number
+  title: string
+  ts: number
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -94,14 +157,14 @@ export function LiveSurveillance() {
 
   // ── Camera devices (from backend — never getUserMedia) ────────────────────
   interface BackendCamera { index: number; label: string; resolution: string; active: boolean }
-  const [backendCameras,    setBackendCameras]    = useState<BackendCamera[]>([])
-  const [selectedCamIdx,    setSelectedCamIdx]    = useState<number>(0)
+  const [backendCameras, setBackendCameras] = useState<BackendCamera[]>([])
+  const [selectedCamIdx, setSelectedCamIdx] = useState<number>(0)
   const [isFetchingCameras, setIsFetchingCameras] = useState(false)
 
   const fetchBackendCameras = useCallback(async () => {
     setIsFetchingCameras(true)
     try {
-      const res  = await fetch(`${API}/api/stream/cameras`)
+      const res = await fetch(`${API}/api/stream/cameras`)
       const data = await res.json()
       const cams: BackendCamera[] = (data.cameras ?? []).sort(
         (a: BackendCamera, b: BackendCamera) => a.index - b.index
@@ -118,26 +181,28 @@ export function LiveSurveillance() {
 
   // ── Stream state ──────────────────────────────────────────────────────────
   const [isStreaming, setIsStreaming] = useState(false)
-  const [isStarting,  setIsStarting]  = useState(false)
-  const [error,       setError]       = useState<string | null>(null)
+  const [isStarting, setIsStarting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
   // ── UI metrics ────────────────────────────────────────────────────────────
-  const [fps,       setFps]      = useState(0)
-  const [latencyMs, setLatency]  = useState(0)
-  const [detCount,  setDetCount] = useState(0)
-  const [condition, setCondition]= useState('S1_NORMAL')
-  const [alerts,    setAlerts]   = useState<LiveAlert[]>([])
+  const [fps, setFps] = useState(0)
+  const [latencyMs, setLatency] = useState(0)
+  const [detCount, setDetCount] = useState(0)
+  const [condition, setCondition] = useState('S1_NORMAL')
+  const [alerts, setAlerts] = useState<LiveAlert[]>([])
 
   const lastAlertKeyRef = useRef<Record<string, number>>({})
 
   // ── Refs ──────────────────────────────────────────────────────────────────
-  const imgRef        = useRef<HTMLImageElement>(null)
-  const overlayRef    = useRef<HTMLCanvasElement>(null)
-  const rafRef        = useRef<number | null>(null)
-  const isActiveRef   = useRef(false)
-  // lastDetsRef — persists last non-empty detections across backend frames
-  // (backend ~7-15 FPS, RAF at 60 FPS — without this, boxes flicker between updates)
-  const lastDetsRef = useRef<any[]>([])
+  const imgRef = useRef<HTMLImageElement>(null)
+  const overlayRef = useRef<HTMLCanvasElement>(null)
+  const rafRef = useRef<number | null>(null)
+  const isActiveRef = useRef(false)
+  // Track-based persistence (same architecture as DetectionPanel.LiveMode)
+  const tracksRef = useRef<Track[]>([])
+  const pendingRef = useRef<any[] | null>(null)
+  const frameWRef = useRef(640)
+  const frameHRef = useRef(480)
 
   // ── Alert generator ───────────────────────────────────────────────────────
   const emitAlert = useCallback((det: any) => {
@@ -164,10 +229,8 @@ export function LiveSurveillance() {
     }
   }, [])
 
-  // ── FPS / latency / condition — updates on every backend frame (even 0 dets)
-  // MUST be a separate effect from detection count — if merged with the det-count
-  // effect and guarded by dets.length > 0, FPS shows 0 when pipeline runs but
-  // no workers are in frame, making the system appear frozen.
+  // ── Store → UI metrics sync ───────────────────────────────────────────────
+  // Effect 1: FPS / latency / condition — updates even with 0 detections
   useEffect(() => {
     if (!isActiveRef.current) return
     if (store.fps > 0 || store.latencyMs > 0) {
@@ -179,48 +242,48 @@ export function LiveSurveillance() {
     }
   }, [store.fps, store.latencyMs, store.sceneCondition])
 
-  // ── Detection count / alerts — only when workers are actually found ─────────
+  // Effect 2: detections — feeds pendingRef (picked up by drawLoop) + sidebar state
   useEffect(() => {
     if (!isActiveRef.current) return
     const dets = store.detections
     if (!dets?.length) return
+
+    pendingRef.current = dets
     setDetCount(dets.length)
     pushDetections(dets, store.latencyMs, [], [], store.fps, store.sceneCondition)
     dets.forEach((d: any) => {
       if (d.class === 'worker' || d.class === 'person') emitAlert(d)
     })
   }, [store.detections, store.latencyMs, store.fps, store.sceneCondition,
-      pushDetections, emitAlert])
+    pushDetections, emitAlert])
 
-  // ── RAF draw loop — matches DetectionPanel.drawOverlay exactly ──────────────
+  // ── RAF draw loop — identical architecture to DetectionPanel.LiveMode ─────────
   //
-  // Key design decisions (all matching DetectionPanel's proven working approach):
-  //   • Canvas sized from img.clientWidth (same as video.clientWidth in DetectionPanel)
-  //     Fallback to canvas.clientWidth → canvas.offsetWidth → 640
-  //   • fw/fh from store.frameWidth/frameHeight (backend-authoritative inference size)
-  //   • Boxes drawn DIRECTLY from store detections — no EMA, no tracking state
-  //   • lastDetsRef caches last non-empty dets so boxes persist between backend frames
-  //   • RAF scheduled at END of function (matches DetectionPanel line 900)
+  //   pendingRef  ← useEffect feeds new detections from WebSocket
+  //   tracksRef   ← IoU tracker (mergeTracks) for persistent smooth boxes
+  //   LERP = 0.60 ← each RAF tick lerps displayed box toward latest track position
+  //
+  // This is the proven working approach from DetectionPanel.LiveMode.
   const drawLoop = useCallback(() => {
     if (!isActiveRef.current) return
 
     const canvas = overlayRef.current
-    const img    = imgRef.current
+    const img = imgRef.current
 
     if (!canvas || !img) {
       rafRef.current = requestAnimationFrame(drawLoop)
       return
     }
 
-    // ── Size canvas to match rendered img area (matches DetectionPanel exactly) ──
-    // img.clientWidth gives the rendered element size (correct for object-fit:contain).
-    // Fall back to canvas.clientWidth if img is hidden, then hard-coded 640×360.
-    const dw = img.clientWidth  || canvas.clientWidth  || canvas.offsetWidth  || 640
+    // ── Size canvas to match rendered img area ────────────────────────────────
+    const dw = img.clientWidth || canvas.clientWidth || canvas.offsetWidth || 640
     const dh = img.clientHeight || canvas.clientHeight || canvas.offsetHeight || 360
 
     if (canvas.width !== dw || canvas.height !== dh) {
-      canvas.width  = dw
+      canvas.width = dw
       canvas.height = dh
+      // Reset track display positions on resize — they'll re-initialize instantly
+      tracksRef.current.forEach(t => { t.initialized = false })
     }
 
     const ctx = canvas.getContext('2d')
@@ -230,103 +293,110 @@ export function LiveSurveillance() {
     }
     ctx.clearRect(0, 0, canvas.width, canvas.height)
 
-    // ── Read detection data from store ────────────────────────────────────────
-    const st   = useDetectionStore.getState()
-    const dets = st.detections
-
-    // Persist last non-empty detections so boxes stay visible between backend frames
-    // (backend ~7-15 FPS; RAF at 60 FPS — without this, boxes flicker)
-    if (dets && dets.length > 0) lastDetsRef.current = dets
-    const drawDets = lastDetsRef.current
-
-    if (!drawDets.length) {
+    // Skip drawing if no MJPEG frame has arrived yet (img not decoded)
+    if (!img.naturalWidth || !img.naturalHeight || isNaN(img.naturalWidth)) {
       rafRef.current = requestAnimationFrame(drawLoop)
       return
     }
 
-    // ── Coordinate transform ──────────────────────────────────────────────────
-    // Use backend-reported inference dimensions as the authoritative coordinate space.
-    // These are sent in every detection_update as frame_width / frame_height.
-    const fw = (st.frameWidth  > 0 ? st.frameWidth  : 0) || 640
-    const fh = (st.frameHeight > 0 ? st.frameHeight : 0) || 480
-    const { rw, rh, ox, oy } = _letterbox(fw, fh, dw, dh)
+    // ── Coordinate transform (matches DetectionPanel.LiveMode exactly) ────────
+    // Letterbox uses img.naturalWidth/naturalHeight (actual MJPEG frame dims).
+    // fw/fh uses backend-reported inference dims; falls back to naturalWidth.
+    const { rw, rh, ox, oy } = _letterbox(img.naturalWidth, img.naturalHeight, dw, dh)
+    const st = useDetectionStore.getState()
+    const fw = frameWRef.current = st.frameWidth || img.naturalWidth
+    const fh = frameHRef.current = st.frameHeight || img.naturalHeight
 
-    // ── Draw each detection directly (no EMA — matches DetectionPanel) ────────
-    for (const det of drawDets) {
-      const box = det.box
-      if (!box || box.length < 4) continue
+    // ── Consume pending detections — run IoU tracker ──────────────────────────
+    if (pendingRef.current !== null) {
+      tracksRef.current = mergeTracks(tracksRef.current, pendingRef.current)
+      pendingRef.current = null
+    }
 
-      const x1 = (box[0] / fw) * rw + ox
-      const y1 = (box[1] / fh) * rh + oy
-      const x2 = (box[2] / fw) * rw + ox
-      const y2 = (box[3] / fh) * rh + oy
-      const bw = x2 - x1
-      const bh = y2 - y1
-      if (bw <= 2 || bh <= 2) continue  // skip sub-pixel or degenerate boxes
+    // ── Draw each live track with LERP smoothing ──────────────────────────────
+    for (const t of tracksRef.current) {
+      const [x1, y1, x2, y2] = t.frameBox
+      const tx1 = (x1 / fw) * rw + ox, ty1 = (y1 / fh) * rh + oy
+      const tx2 = (x2 / fw) * rw + ox, ty2 = (y2 / fh) * rh + oy
 
-      const isWorker = det.class === 'worker' || det.class === 'person'
+      // Snap on first frame, lerp thereafter
+      if (!t.initialized) {
+        t.sx1 = tx1; t.sy1 = ty1; t.sx2 = tx2; t.sy2 = ty2
+        t.initialized = true
+      } else {
+        t.sx1 += (tx1 - t.sx1) * LERP
+        t.sy1 += (ty1 - t.sy1) * LERP
+        t.sx2 += (tx2 - t.sx2) * LERP
+        t.sy2 += (ty2 - t.sy2) * LERP
+      }
+
+      const bw = t.sx2 - t.sx1
+      const bh = t.sy2 - t.sy1
+      if (bw < 2 || bh < 2) continue
+
+      // Fade missed tracks (up to 2 cycles before drop)
+      ctx.globalAlpha = t.missed > 0 ? 0.45 : 1.0
+
+      const isWorker = t.cls === 'worker' || t.cls === 'person'
       const color = isWorker
-        ? workerColor(det.has_helmet, det.has_vest)
-        : (CLASS_COLOR[det.class ?? det.cls] ?? '#aaaaaa')
+        ? workerColor(t.has_helmet, t.has_vest)
+        : (CLASS_COLOR[t.cls] ?? '#aaaaaa')
 
-      ctx.globalAlpha = 1.0
-
-      // ── Box ─────────────────────────────────────────────────────────────
+      // ── Box ──────────────────────────────────────────────────────────────
       ctx.strokeStyle = color
-      ctx.lineWidth   = isWorker ? 3 : 2.5
-      ctx.strokeRect(x1, y1, bw, bh)
+      ctx.lineWidth = isWorker ? 3 : 2.5
+      ctx.strokeRect(t.sx1, t.sy1, bw, bh)
 
       // Corner accents
       const cs = Math.min(12, bw * 0.18, bh * 0.18)
       ctx.lineWidth = isWorker ? 3.5 : 2.5
-      ;[
-        [x1,      y1,      cs,  0,   0,  cs],
-        [x1 + bw, y1,     -cs,  0,   0,  cs],
-        [x1,      y1 + bh, cs,  0,   0, -cs],
-        [x1 + bw, y1 + bh,-cs,  0,   0, -cs],
-      ].forEach(([sx, sy, dx1, dy1, dx2, dy2]) => {
-        ctx.beginPath()
-        ctx.moveTo(sx + dx1, sy + dy1)
-        ctx.lineTo(sx, sy)
-        ctx.lineTo(sx + dx2, sy + dy2)
-        ctx.stroke()
-      })
+        ;[
+          [t.sx1, t.sy1, cs, 0, 0, cs],
+          [t.sx1 + bw, t.sy1, -cs, 0, 0, cs],
+          [t.sx1, t.sy1 + bh, cs, 0, 0, -cs],
+          [t.sx1 + bw, t.sy1 + bh, -cs, 0, 0, -cs],
+        ].forEach(([sx, sy, dx1, dy1, dx2, dy2]) => {
+          ctx.beginPath()
+          ctx.moveTo(sx + dx1, sy + dy1)
+          ctx.lineTo(sx, sy)
+          ctx.lineTo(sx + dx2, sy + dy2)
+          ctx.stroke()
+        })
 
-      // ── Label ────────────────────────────────────────────────────────────
-      const conf  = Math.round((det.confidence ?? 0) * 100)
+      // ── Label ─────────────────────────────────────────────────────────────
+      const conf = Math.round((t.confidence ?? 0) * 100)
       const label = isWorker
-        ? `W ${conf}%${det.has_helmet === false ? ' ⚠H' : ''}${det.has_vest === false ? ' ⚠V' : ''}`
-        : `${det.class ?? det.cls ?? '?'} ${conf}%`
+        ? `W ${conf}%${t.has_helmet === false ? ' ⚠H' : ''}${t.has_vest === false ? ' ⚠V' : ''}`
+        : `${t.cls} ${conf}%`
 
       ctx.font = 'bold 13px monospace'
       const tw = ctx.measureText(label).width
-      ctx.fillStyle   = color
-      ctx.globalAlpha = 0.88
-      ctx.fillRect(x1, Math.max(0, y1 - 20), tw + 10, 20)
-      ctx.globalAlpha = 1.0
-      ctx.fillStyle   = isWorker ? '#000' : '#fff'
-      ctx.fillText(label, x1 + 5, Math.max(14, y1 - 4))
+      ctx.fillStyle = color
+      ctx.globalAlpha = t.missed > 0 ? 0.40 : 0.88
+      ctx.fillRect(t.sx1, Math.max(0, t.sy1 - 20), tw + 10, 20)
+      ctx.globalAlpha = t.missed > 0 ? 0.45 : 1.0
+      ctx.fillStyle = isWorker ? '#000' : '#fff'
+      ctx.fillText(label, t.sx1 + 5, Math.max(14, t.sy1 - 4))
 
-      // ── PPE H/V badges on workers ────────────────────────────────────────
+      // ── PPE H/V badges on workers ─────────────────────────────────────────
       if (isWorker) {
         const bSize = Math.max(14, Math.min(20, bw * 0.14))
-        const by2   = y1 + 4
+        const by2 = t.sy1 + 4
         const bFont = `bold ${Math.max(9, bSize - 5)}px monospace`
 
-        // Helmet badge
-        let bx2 = x1 + bw - bSize - 4
-        ctx.fillStyle = det.has_helmet === true  ? 'rgba(0,200,100,0.92)'
-                      : det.has_helmet === false ? 'rgba(255,42,42,0.92)'
-                      :                            'rgba(100,100,100,0.80)'
+        let bx2 = t.sx1 + bw - bSize - 4
+        ctx.globalAlpha = t.missed > 0 ? 0.45 : 0.92
+        ctx.fillStyle = t.has_helmet === true ? 'rgba(0,200,100,0.92)'
+          : t.has_helmet === false ? 'rgba(255,42,42,0.92)'
+            : 'rgba(100,100,100,0.80)'
         ctx.fillRect(bx2, by2, bSize, bSize)
         ctx.fillStyle = '#fff'; ctx.font = bFont
         ctx.fillText('H', bx2 + 4, by2 + bSize - 4)
 
-        // Vest badge
         bx2 -= bSize + 3
-        ctx.fillStyle = det.has_vest === true  ? 'rgba(0,200,100,0.92)'
-                      : det.has_vest === false ? 'rgba(255,42,42,0.92)'
-                      :                          'rgba(100,100,100,0.80)'
+        ctx.fillStyle = t.has_vest === true ? 'rgba(0,200,100,0.92)'
+          : t.has_vest === false ? 'rgba(255,42,42,0.92)'
+            : 'rgba(100,100,100,0.80)'
         ctx.fillRect(bx2, by2, bSize, bSize)
         ctx.fillStyle = '#fff'
         ctx.fillText('V', bx2 + 4, by2 + bSize - 4)
@@ -335,7 +405,6 @@ export function LiveSurveillance() {
       ctx.globalAlpha = 1.0
     }
 
-    // Schedule next frame at END (matches DetectionPanel — ensures complete draw cycle)
     rafRef.current = requestAnimationFrame(drawLoop)
   }, [])  // stable — reads store and refs directly, no stale closures
 
@@ -351,9 +420,9 @@ export function LiveSurveillance() {
 
     try {
       const res = await fetch(`${API}/api/stream/start`, {
-        method:  'POST',
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ rtsp_url: String(idx) }),
+        body: JSON.stringify({ rtsp_url: String(idx) }),
       })
       if (!res.ok) throw new Error(`Stream start failed: HTTP ${res.status}`)
 
@@ -421,7 +490,7 @@ export function LiveSurveillance() {
     return () => {
       isActiveRef.current = false
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current)
-      fetch(`${API}/api/stream/stop`, { method: 'POST' }).catch(() => {})
+      fetch(`${API}/api/stream/stop`, { method: 'POST' }).catch(() => { })
       setRunning(false)
     }
   }, [setRunning])
@@ -564,9 +633,8 @@ export function LiveSurveillance() {
 
             <div className="lsv__controls-right">
               <div className="lsv__connection-status">
-                <span className={`lsv__conn-dot lsv__conn-dot--${
-                  isStreaming ? 'connected' : isStarting ? 'connecting' : error ? 'error' : 'idle'
-                }`} />
+                <span className={`lsv__conn-dot lsv__conn-dot--${isStreaming ? 'connected' : isStarting ? 'connecting' : error ? 'error' : 'idle'
+                  }`} />
                 <span className="lsv__conn-label">
                   {isStreaming ? 'STREAM OK' : isStarting ? 'CONNECTING' : error ? 'STREAM ERROR' : 'IDLE'}
                 </span>
@@ -647,10 +715,10 @@ export function LiveSurveillance() {
             </div>
             <div className="lsv__class-list">
               {[
-                { color: '#00c864', label: 'Compliant',   sub: 'Helmet + Vest' },
-                { color: '#ffaa00', label: 'Partial PPE', sub: 'Missing 1 item' },
-                { color: '#ff2a2a', label: 'No PPE',      sub: 'No helmet/vest' },
-                { color: '#ffd600', label: 'Helmet',      sub: 'Detected alone' },
+                { color: '#00c864', label: 'Compliant', sub: 'Helmet + Vest' },
+                { color: '#ff2a2a', label: 'Partial PPE', sub: 'Missing 1 item' },
+                { color: '#ff2a2a', label: 'No PPE', sub: 'No helmet/vest' },
+                { color: '#ffd600', label: 'Helmet', sub: 'Detected alone' },
                 { color: '#00bfff', label: 'Safety Vest', sub: 'Detected alone' },
               ].map(row => (
                 <div key={row.label} className="lsv__class-item">
