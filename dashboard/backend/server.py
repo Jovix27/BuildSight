@@ -2735,25 +2735,27 @@ def enumerate_cameras():
                 "resolution": f"{w}x{h}",
                 "width": w, "height": h, "active": True,
             }
-        # Use default backend (NOT DSHOW) — DSHOW holds the hardware handle
-        # for seconds after release on Windows, blocking the subsequent
-        # stream/start DSHOW open and causing 1-3 minute startup delays.
-        try:
-            cap = cv2.VideoCapture(idx)
-            if not cap.isOpened():
-                return None
-            ret, frame = cap.read()
-            cap.release()
-            if ret and frame is not None:
-                h, w = frame.shape[:2]
+        # Use CAP_MSMF (Media Foundation) — Windows-native, fast, does NOT
+        # lock the hardware handle like DSHOW does.  We read dimensions via
+        # cap.get() rather than cap.read() so no frame decode is needed,
+        # keeping the probe fast and avoiding hang-prone frame grabs.
+        for backend in (cv2.CAP_MSMF, cv2.CAP_DSHOW):
+            try:
+                cap = cv2.VideoCapture(idx, backend)
+                if not cap.isOpened():
+                    cap.release()
+                    continue
+                w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)) or 640
+                h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT)) or 480
+                cap.release()
                 label = "Laptop Camera" if idx == 0 else f"External Camera (USB-{idx})"
                 return {
                     "index": idx, "label": label,
                     "resolution": f"{w}x{h}",
                     "width": w, "height": h, "active": False,
                 }
-        except Exception:
-            pass
+            except Exception:
+                pass
         return None
 
     cameras = []
